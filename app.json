@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Daber",
+    "slug": "daber-app",
+    "scheme": "daber",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "plugins": [
+      "expo-router",
+      "expo-apple-authentication"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.daber.app"
+    },
+    "android": {
+      "package": "com.daber.app"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "382e0919-cafe-4c2f-a45f-7e5f944c308d"
+      }
+    }
+  }
+}
