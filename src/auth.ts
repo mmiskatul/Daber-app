@@ -1,20 +1,40 @@
-import * as AppleAuthentication from "expo-apple-authentication";
-import * as Google from "expo-auth-session/providers/google";
-import { makeRedirectUri } from "expo-auth-session";
 import {
   User,
-  createUserWithEmailAndPassword,
-  signInWithCredential,
-  signInWithEmailAndPassword,
-  signInWithPopup,
-  OAuthProvider,
   GoogleAuthProvider,
-  AuthCredential
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signInWithCredential,
+  signInWithPopup,
 } from "firebase/auth";
 import { Platform } from "react-native";
-import { appConfig } from "./config";
+import {
+  GoogleSignin,
+  isCancelledResponse,
+  isSuccessResponse
+} from "@react-native-google-signin/google-signin";
 import { auth } from "./firebase";
 import { syncUser } from "./api";
+import { appConfig } from "./config";
+
+let googleConfigured = false;
+
+function configureGoogleSignIn(): void {
+  if (googleConfigured || Platform.OS === "web") {
+    return;
+  }
+
+  if (!appConfig.google.webClientId) {
+    throw new Error("Google Sign-In is missing the web client ID in the Expo environment.");
+  }
+
+  GoogleSignin.configure({
+    webClientId: appConfig.google.webClientId,
+    iosClientId: appConfig.google.iosClientId || undefined,
+    offlineAccess: false
+  });
+
+  googleConfigured = true;
+}
 
 export async function registerWithEmail(email: string, password: string): Promise<User> {
   const result = await createUserWithEmailAndPassword(auth, email, password);
@@ -28,21 +48,29 @@ export async function loginWithEmail(email: string, password: string): Promise<U
   return result.user;
 }
 
-export function useGooglePrompt() {
-  const [request, response, promptAsync] = Google.useAuthRequest({
-    expoClientId: appConfig.google.expoClientId || undefined,
-    iosClientId: appConfig.google.iosClientId || undefined,
-    androidClientId: appConfig.google.androidClientId || undefined,
-    webClientId: appConfig.google.webClientId || undefined,
-    redirectUri: makeRedirectUri({
-      scheme: "daber"
-    })
-  });
+export async function loginWithGoogle(): Promise<User> {
+  if (Platform.OS === "web") {
+    const provider = new GoogleAuthProvider();
+    const result = await signInWithPopup(auth, provider);
+    await syncUser(result.user);
+    return result.user;
+  }
 
-  return { request, response, promptAsync };
-}
+  configureGoogleSignIn();
+  await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
-export async function completeGoogleLogin(idToken: string | null): Promise<User> {
+  const response = await GoogleSignin.signIn();
+
+  if (isCancelledResponse(response)) {
+    throw new Error("Google sign-in was cancelled.");
+  }
+
+  if (!isSuccessResponse(response)) {
+    throw new Error("Google sign-in did not complete successfully.");
+  }
+
+  const idToken = response.data.idToken;
+
   if (!idToken) {
     throw new Error("Google sign-in did not return an ID token.");
   }
@@ -53,35 +81,6 @@ export async function completeGoogleLogin(idToken: string | null): Promise<User>
   return result.user;
 }
 
-export async function loginWithGoogleWeb(): Promise<User> {
-  const provider = new GoogleAuthProvider();
-  const result = await signInWithPopup(auth, provider);
-  await syncUser(result.user);
-  return result.user;
-}
-
 export async function loginWithApple(): Promise<User> {
-  if (Platform.OS !== "ios") {
-    throw new Error("Apple sign-in is only available on iOS devices.");
-  }
-
-  const credential = await AppleAuthentication.signInAsync({
-    requestedScopes: [
-      AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-      AppleAuthentication.AppleAuthenticationScope.EMAIL
-    ]
-  });
-
-  if (!credential.identityToken) {
-    throw new Error("Apple sign-in did not return an identity token.");
-  }
-
-  const provider = new OAuthProvider("apple.com");
-  const firebaseCredential: AuthCredential = provider.credential({
-    idToken: credential.identityToken
-  });
-
-  const result = await signInWithCredential(auth, firebaseCredential);
-  await syncUser(result.user);
-  return result.user;
+  throw new Error("Apple sign-in is not enabled in the current Expo runtime. Use email login or a dedicated iOS native setup.");
 }

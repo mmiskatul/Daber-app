@@ -1,0 +1,54 @@
+{
+  "project_info": {
+    "project_number": "219426011241",
+    "project_id": "daber-1470e",
+    "storage_bucket": "daber-1470e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:219426011241:android:e37ae293df478f3a86caf8",
+        "android_client_info": {
+          "package_name": "com.daber.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "219426011241-elum17f6r24hbnkru7sb1cl2h89m6c1b.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.daber.app",
+            "certificate_hash": "56840d75f95e1051016c96f8ac786ddbaa651dd9"
+          }
+        },
+        {
+          "client_id": "219426011241-ecl68oh2n8pae7kdti1t8v3emsk4nddg.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA4V1xVxHZrnAQMxebvqlZzfv81XwB4ffo"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "219426011241-ecl68oh2n8pae7kdti1t8v3emsk4nddg.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "219426011241-ngfiip2veu0ne9eniefebr7a5gr6069j.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.daber.app"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

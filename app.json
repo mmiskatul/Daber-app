@@ -7,26 +7,21 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "plugins": [
-      "expo-router",
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      "@react-native-google-signin/google-signin"
     ],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.daber.app"
     },
     "android": {
+      "googleServicesFile": "./google-services.json",
       "package": "com.daber.app"
     },
     "web": {
       "bundler": "metro"
     },
-    "experiments": {
-      "typedRoutes": true
-    },
     "extra": {
-      "router": {
-        "origin": false
-      },
       "eas": {
         "projectId": "382e0919-cafe-4c2f-a45f-7e5f944c308d"
       }

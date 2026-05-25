@@ -1,14 +1,12 @@
 import React from "react";
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, spacing } from "./theme";
 import {
-  completeGoogleLogin,
   loginWithApple,
   loginWithEmail,
-  loginWithGoogleWeb,
-  registerWithEmail,
-  useGooglePrompt
+  loginWithGoogle,
+  registerWithEmail
 } from "./auth";
 import { User } from "firebase/auth";
 
@@ -24,22 +22,6 @@ export function AuthScreen({ onAuthenticated }: Props) {
   const [password, setPassword] = React.useState("");
   const [busy, setBusy] = React.useState<string | null>(null);
   const [error, setError] = React.useState("");
-  const { response, promptAsync } = useGooglePrompt();
-
-  React.useEffect(() => {
-    if (Platform.OS === "web") {
-      return;
-    }
-
-    if (response?.type === "success") {
-      const idToken = response.authentication?.idToken ?? null;
-      setBusy("google");
-      completeGoogleLogin(idToken)
-        .then(onAuthenticated)
-        .catch((authError) => setError(authError instanceof Error ? authError.message : "Google sign-in failed."))
-        .finally(() => setBusy(null));
-    }
-  }, [response, onAuthenticated]);
 
   async function run(name: string, action: () => Promise<User>) {
     setError("");
@@ -82,11 +64,7 @@ export function AuthScreen({ onAuthenticated }: Props) {
           <Pressable
             disabled={busy !== null}
             style={[styles.outlineButton, busy ? styles.disabled : null]}
-            onPress={() =>
-              Platform.OS === "web"
-                ? run("google", loginWithGoogleWeb)
-                : promptAsync()
-            }
+            onPress={() => run("google", loginWithGoogle)}
           >
             <Text style={styles.outlineButtonText}>{busy === "google" ? "Connecting..." : "Continue with Google"}</Text>
           </Pressable>
