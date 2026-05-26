@@ -293,10 +293,11 @@ export async function getScenarioThemes(user: User): Promise<{ todayThemeId: str
 export async function launchScenario(
   user: User,
   themeId: string,
-  provider: "gemini" | "openai" = "gemini"
+  provider: "gemini" | "openai" = "gemini",
+  forceNew = false
 ): Promise<ScenarioLaunchResponse> {
   const token = await user.getIdToken();
-  const response = await request<ScenarioLaunchResponse>("/scenarios/launch", token, { themeId, provider });
+  const response = await request<ScenarioLaunchResponse>("/scenarios/launch", token, { themeId, provider, forceNew });
 
   if (!response.details) {
     throw new Error("Scenario launch payload was not returned by the backend.");

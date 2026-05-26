@@ -4,7 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { signOut, User } from "firebase/auth";
 import { auth } from "./firebase";
 import { colors, radii } from "./theme";
-import { getCurrentUser, launchScenario, ScenarioLaunchResponse } from "./api";
+import { getCurrentUser, launchScenario } from "./api";
 
 type Props = {
   user: User;
@@ -46,27 +46,6 @@ type ThemeItem = {
   }>;
 };
 
-type LaunchState = {
-  sessionId: string;
-  theme: {
-    title: string;
-    he: string;
-    heChar: string;
-    band: string;
-    palette: ThemeItem["palette"];
-  };
-  ct: {
-    title: string;
-  };
-  variation: {
-    situation: string;
-  };
-  tutorVoice: {
-    name: string;
-    subtitle: string;
-  };
-};
-
 type DetailState =
   | {
       kind: "roadmap";
@@ -81,15 +60,6 @@ type DetailState =
       eyebrow: string;
       body: string;
       action: string;
-    }
-  | {
-      kind: "scenario";
-      title: string;
-      eyebrow: string;
-      body: string;
-      action: string;
-      secondaryAction: string;
-      tertiaryAction: string;
     };
 
 const PATH_OFFSETS = [0, 30, 50, 20];
@@ -202,10 +172,8 @@ const GAMES = [
 
 export function HomeScreen({ user, onOpenConversation }: Props) {
   const [tab, setTab] = React.useState<TabKey>("home");
-  const [launching, setLaunching] = React.useState<LaunchState | null>(null);
   const [detail, setDetail] = React.useState<DetailState | null>(null);
   const [selectedVoiceName, setSelectedVoiceName] = React.useState("Dana");
-  const [activeScenarioSessionId, setActiveScenarioSessionId] = React.useState("");
 
   const todayThemeId = React.useMemo(() => {
     const day = Math.floor(Date.now() / 86400000);
@@ -249,27 +217,6 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     };
   }, [user]);
 
-  React.useEffect(() => {
-    if (!launching) {
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      setDetail({
-        kind: "scenario",
-        eyebrow: launching.theme.band,
-        title: `${launching.theme.title} · ${launching.ct.title}`,
-        body: `${launching.tutorVoice.name}: ${launching.variation.situation}`,
-        action: "Start scene",
-        secondaryAction: "New variation",
-        tertiaryAction: "Close"
-      });
-      setLaunching(null);
-    }, 1500);
-
-    return () => clearTimeout(timeout);
-  }, [launching]);
-
   async function handleThemeTap(theme: ThemeItem) {
     if (theme.locked) {
       setDetail({
@@ -283,53 +230,19 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     }
 
     try {
-      const response: ScenarioLaunchResponse = await launchScenario(user, theme.id, "gemini");
-      setActiveScenarioSessionId(response.sessionId);
-      setLaunching({
-        sessionId: response.sessionId,
-        theme: {
-          title: response.theme.title,
-          he: response.theme.he,
-          heChar: response.theme.heChar,
-          band: response.theme.band,
-          palette: theme.palette
-        },
-        ct: {
-          title: response.ct.title
-        },
-        variation: {
-          situation: response.variation.situation
-        },
-        tutorVoice: response.tutorVoice
-      });
+      const response = await launchScenario(user, theme.id, "gemini");
       setSelectedVoiceName(response.tutorVoice.name);
+      onOpenConversation(response.sessionId);
     } catch {
-      setActiveScenarioSessionId("");
-      const ct = theme.cts[Math.floor(Math.random() * theme.cts.length)];
-      const variation = ct.variations[Math.floor(Math.random() * ct.variations.length)];
-      setLaunching({
-        sessionId: "",
-        theme: {
-          title: theme.title,
-          he: theme.he,
-          heChar: theme.heChar,
-          band: theme.band,
-          palette: theme.palette
-        },
-        ct: {
-          title: ct.title
-        },
-        variation: {
-          situation: variation.situation
-        },
-        tutorVoice: {
-          name: selectedVoiceName,
-          subtitle: ""
-        }
+      setDetail({
+        kind: "roadmap",
+        eyebrow: "SCENARIO ERROR",
+        title: theme.title,
+        body: "The scene could not be opened right now. Try again once the backend is reachable.",
+        action: "Close"
       });
     }
   }
-
   function handleRoadmapTap(stop: RoadmapStop) {
     if (stop.kind === "current") {
       setDetail({
@@ -383,23 +296,7 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     });
   }
 
-  function handleScenarioPrimary() {
-    if (activeScenarioSessionId) {
-      setDetail(null);
-      onOpenConversation(activeScenarioSessionId);
-    }
-  }
 
-  function handleScenarioSecondary() {
-    if (!launching && detail?.kind === "scenario") {
-      const theme = THEMES.find((item) => detail.title.startsWith(item.title));
-
-      if (theme) {
-        handleThemeTap(theme);
-        setDetail(null);
-      }
-    }
-  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -557,13 +454,10 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
         <TabButton label="Games" icon="✦" active={tab === "games"} onPress={() => setTab("games")} />
       </View>
 
-      {launching ? <SceneLaunchOverlay launch={launching} /> : null}
       {detail ? (
         <DetailOverlay
           detail={detail}
           onClose={() => setDetail(null)}
-          onPrimaryAction={detail.kind === "scenario" ? handleScenarioPrimary : undefined}
-          onSecondaryAction={detail.kind === "scenario" ? handleScenarioSecondary : undefined}
         />
       ) : null}
     </SafeAreaView>
@@ -673,38 +567,12 @@ function TabButton({
   );
 }
 
-function SceneLaunchOverlay({ launch }: { launch: LaunchState }) {
-  const { theme, variation, tutorVoice } = launch;
-
-  return (
-    <View style={styles.overlayShell}>
-      <Text style={[styles.overlayWatermark, { color: theme.palette.warm }]}>{theme.heChar}</Text>
-      <View style={[styles.overlayGlow, { backgroundColor: `${theme.palette.warm}22` }]} />
-      <View style={styles.overlayContent}>
-        <View style={styles.overlayTopRow}>
-          <View style={[styles.overlayDot, { backgroundColor: theme.palette.warm }]} />
-          <Text style={[styles.overlayEyebrow, { color: theme.palette.warm }]}>STEPPING INTO</Text>
-        </View>
-        <Text style={styles.overlayHebrew}>{theme.he}</Text>
-        <Text style={[styles.overlayTitle, { color: theme.palette.warm }]}>{theme.title}</Text>
-        <Text style={styles.overlayVoice}>{tutorVoice.name}</Text>
-        <View style={styles.overlayRule} />
-        <Text style={styles.overlaySituation}>{variation.situation}</Text>
-      </View>
-    </View>
-  );
-}
-
 function DetailOverlay({
   detail,
-  onClose,
-  onPrimaryAction,
-  onSecondaryAction
+  onClose
 }: {
   detail: DetailState;
   onClose: () => void;
-  onPrimaryAction?: () => void;
-  onSecondaryAction?: () => void;
 }) {
   return (
     <View style={styles.detailOverlay}>
@@ -713,23 +581,9 @@ function DetailOverlay({
         <Text style={styles.detailEyebrow}>{detail.eyebrow}</Text>
         <Text style={styles.detailTitle}>{detail.title}</Text>
         <Text style={styles.detailBody}>{detail.body}</Text>
-        {detail.kind === "scenario" ? (
-          <View style={styles.detailActions}>
-            <Pressable style={styles.detailButton} onPress={onPrimaryAction}>
-              <Text style={styles.detailButtonText}>{detail.action}</Text>
-            </Pressable>
-            <Pressable style={styles.detailButtonSecondary} onPress={onSecondaryAction}>
-              <Text style={styles.detailButtonSecondaryText}>{detail.secondaryAction}</Text>
-            </Pressable>
-            <Pressable style={styles.detailButtonGhost} onPress={onClose}>
-              <Text style={styles.detailButtonGhostText}>{detail.tertiaryAction}</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <Pressable style={styles.detailButton} onPress={onClose}>
-            <Text style={styles.detailButtonText}>{detail.action}</Text>
-          </Pressable>
-        )}
+        <Pressable style={styles.detailButton} onPress={onClose}>
+          <Text style={styles.detailButtonText}>{detail.action}</Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -1338,9 +1192,6 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     marginBottom: 18
   },
-  detailActions: {
-    gap: 10
-  },
   detailButton: {
     minHeight: 48,
     borderRadius: radii.pill,
@@ -1352,29 +1203,6 @@ const styles = StyleSheet.create({
     color: colors.bone,
     fontSize: 15,
     fontWeight: "600"
-  },
-  detailButtonSecondary: {
-    minHeight: 46,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.lineStrong,
-    backgroundColor: colors.paper,
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  detailButtonSecondaryText: {
-    color: colors.ink,
-    fontSize: 15,
-    fontWeight: "500"
-  },
-  detailButtonGhost: {
-    minHeight: 42,
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  detailButtonGhostText: {
-    color: colors.inkMute,
-    fontSize: 14
   },
   tabBar: {
     flexDirection: "row",
@@ -1403,85 +1231,6 @@ const styles = StyleSheet.create({
   },
   tabLabelActive: {
     color: colors.ink
-  },
-  overlayShell: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    backgroundColor: colors.ink,
-    alignItems: "center",
-    justifyContent: "center",
-    padding: 36,
-    overflow: "hidden"
-  },
-  overlayWatermark: {
-    position: "absolute",
-    right: "-10%",
-    top: "-10%",
-    fontSize: 360,
-    lineHeight: 360,
-    opacity: 0.1,
-    fontWeight: "700"
-  },
-  overlayGlow: {
-    position: "absolute",
-    width: 420,
-    height: 420,
-    borderRadius: 210,
-    opacity: 1
-  },
-  overlayContent: {
-    alignItems: "center",
-    maxWidth: 300
-  },
-  overlayTopRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    marginBottom: 14
-  },
-  overlayDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 999
-  },
-  overlayEyebrow: {
-    fontSize: 11,
-    letterSpacing: 2
-  },
-  overlayHebrew: {
-    color: colors.bone,
-    fontSize: 52,
-    fontWeight: "700",
-    lineHeight: 52,
-    textAlign: "center"
-  },
-  overlayTitle: {
-    fontSize: 34,
-    fontStyle: "italic",
-    marginTop: 4,
-    lineHeight: 34,
-    textAlign: "center"
-  },
-  overlayVoice: {
-    color: "rgba(244,236,222,0.68)",
-    fontSize: 14,
-    letterSpacing: 1.5,
-    marginTop: 10
-  },
-  overlayRule: {
-    width: 32,
-    height: 1,
-    backgroundColor: "rgba(244,236,222,0.3)",
-    marginVertical: 18
-  },
-  overlaySituation: {
-    color: "rgba(244,236,222,0.85)",
-    fontSize: 17,
-    lineHeight: 26,
-    textAlign: "center",
-    fontStyle: "italic"
   }
 });
+

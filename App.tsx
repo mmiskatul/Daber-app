@@ -69,6 +69,9 @@ export default function App() {
         <ConversationScreen
           user={user}
           sessionId={activeConversationSessionId}
+          onReplaceSession={(nextSessionId) => {
+            setActiveConversationSessionId(nextSessionId);
+          }}
           onExit={() => {
             setActiveConversationSessionId("");
             setStage("home");

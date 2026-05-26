@@ -21,6 +21,7 @@ import {
 import { User } from "firebase/auth";
 import {
   getScenarioSession,
+  launchScenario,
   ScenarioSessionResponse,
   ScenarioTurn,
   sendScenarioMessage,
@@ -31,6 +32,7 @@ import { colors, radii } from "./theme";
 type Props = {
   user: User;
   sessionId: string;
+  onReplaceSession: (sessionId: string) => void;
   onExit: () => void;
 };
 
@@ -80,7 +82,7 @@ const ENGLISH_TRANSLATIONS: Record<string, string> = {
   "בְּסֵדֶר גָּמוּר. הַבֵּיצִים נִמְצָאוֹת בַּמְּקָרֵר בַּצַּד הַשְּׂמָאלִי. אֵיזֶה גֹּדֶל אַתָּה מְחַפֵּשׂ?": "No problem. The eggs are in the fridge on the left side. What size are you looking for?"
 };
 
-export function ConversationScreen({ user, sessionId, onExit }: Props) {
+export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }: Props) {
   const [session, setSession] = React.useState<ScenarioSessionResponse | null>(null);
   const [turns, setTurns] = React.useState<ScenarioTurn[]>([]);
   const [inputMode, setInputMode] = React.useState<"voice" | "text">("voice");
@@ -90,6 +92,7 @@ export function ConversationScreen({ user, sessionId, onExit }: Props) {
   const [minimized, setMinimized] = React.useState(false);
   const [showHints, setShowHints] = React.useState(false);
   const [showCorrectionSheet, setShowCorrectionSheet] = React.useState(false);
+  const [showSceneMenu, setShowSceneMenu] = React.useState(false);
   const [showTranslations, setShowTranslations] = React.useState<Record<number, boolean>>({});
   const [error, setError] = React.useState("");
   const [mode, setMode] = React.useState<Mode>("speaking");
@@ -302,6 +305,24 @@ export function ConversationScreen({ user, sessionId, onExit }: Props) {
     }
   }
 
+  async function handleResetScene() {
+    if (!session?.theme?.id || sending) {
+      return;
+    }
+
+    setShowSceneMenu(false);
+    setSending(true);
+    setError("");
+
+    try {
+      const freshSession = await launchScenario(user, session.theme.id, session.provider || "gemini", true);
+      onReplaceSession(freshSession.sessionId);
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "Failed to reset the scene.");
+      setSending(false);
+    }
+  }
+
   const toggleTranslation = (index: number) => {
     setShowTranslations((prev) => ({
       ...prev,
@@ -346,7 +367,7 @@ export function ConversationScreen({ user, sessionId, onExit }: Props) {
           </View>
         </Pressable>
 
-        <Pressable onPress={() => {}} style={styles.topPill}>
+        <Pressable onPress={() => setShowSceneMenu(true)} style={styles.topPill}>
           <Text style={styles.settingsPillText}>⚙</Text>
         </Pressable>
       </View>
@@ -471,6 +492,33 @@ export function ConversationScreen({ user, sessionId, onExit }: Props) {
                 <Text style={styles.correctionBtnTerraText}>🎤 Practice it</Text>
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSceneMenu}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowSceneMenu(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setShowSceneMenu(false)} />
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetGrabber} />
+            <Text style={styles.sheetEyebrow}>SCENE</Text>
+            <Text style={styles.sheetTitle}>Conversation controls</Text>
+            <Pressable style={styles.sheetItem} onPress={handleResetScene} disabled={sending}>
+              <Text style={styles.sheetItemActionTitle}>Start fresh scene</Text>
+              <Text style={styles.sheetItemSubText}>Create a brand new variation and reset the conversation.</Text>
+            </Pressable>
+            <Pressable style={styles.sheetItem} onPress={onExit}>
+              <Text style={styles.sheetItemActionTitle}>Back to home</Text>
+              <Text style={styles.sheetItemSubText}>Leave this conversation and return to the scenario list.</Text>
+            </Pressable>
+            <Pressable style={styles.sheetButton} onPress={() => setShowSceneMenu(false)}>
+              <Text style={styles.sheetButtonText}>Close</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -1481,6 +1529,12 @@ const styles = StyleSheet.create({
     fontSize: 19,
     lineHeight: 25,
     writingDirection: "rtl"
+  },
+  sheetItemActionTitle: {
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 4
   },
   sheetItemSubText: {
     color: colors.inkMute,
