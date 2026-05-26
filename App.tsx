@@ -6,22 +6,25 @@ import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "./src/firebase";
 import { getCurrentUser, getOnboarding, syncUser } from "./src/api";
 import { AuthScreen } from "./src/AuthScreen";
+import { ConversationScreen } from "./src/ConversationScreen";
 import { HomeScreen } from "./src/HomeScreen";
 import { OnboardingScreen } from "./src/OnboardingScreen";
 import { colors, radii } from "./src/theme";
 
-type AppStage = "loading" | "auth" | "onboarding" | "home";
+type AppStage = "loading" | "auth" | "onboarding" | "home" | "conversation";
 
 export default function App() {
   const [stage, setStage] = React.useState<AppStage>("loading");
   const [user, setUser] = React.useState<User | null>(null);
   const [showSplash, setShowSplash] = React.useState(true);
+  const [activeConversationSessionId, setActiveConversationSessionId] = React.useState("");
 
   React.useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
       setUser(nextUser);
 
       if (!nextUser) {
+        setActiveConversationSessionId("");
         setStage("auth");
         return;
       }
@@ -62,8 +65,23 @@ export default function App() {
         />
       ) : stage === "onboarding" ? (
         <OnboardingScreen user={user} onBack={() => setStage("auth")} onDone={() => setStage("home")} />
+      ) : stage === "conversation" && activeConversationSessionId ? (
+        <ConversationScreen
+          user={user}
+          sessionId={activeConversationSessionId}
+          onExit={() => {
+            setActiveConversationSessionId("");
+            setStage("home");
+          }}
+        />
       ) : (
-        <HomeScreen user={user} />
+        <HomeScreen
+          user={user}
+          onOpenConversation={(sessionId) => {
+            setActiveConversationSessionId(sessionId);
+            setStage("conversation");
+          }}
+        />
       )}
     </>
   );

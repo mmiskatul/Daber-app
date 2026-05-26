@@ -8,7 +8,13 @@
     "newArchEnabled": true,
     "plugins": [
       "expo-apple-authentication",
-      "@react-native-google-signin/google-signin"
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Daber to access your microphone for spoken Hebrew practice."
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,

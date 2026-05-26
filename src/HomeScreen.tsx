@@ -4,9 +4,11 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { signOut, User } from "firebase/auth";
 import { auth } from "./firebase";
 import { colors, radii } from "./theme";
+import { getCurrentUser, launchScenario, ScenarioLaunchResponse } from "./api";
 
 type Props = {
   user: User;
+  onOpenConversation: (sessionId: string) => void;
 };
 
 type TabKey = "home" | "scenarios" | "games";
@@ -45,9 +47,24 @@ type ThemeItem = {
 };
 
 type LaunchState = {
-  theme: ThemeItem;
-  ct: ThemeItem["cts"][number];
-  variation: ThemeItem["cts"][number]["variations"][number];
+  sessionId: string;
+  theme: {
+    title: string;
+    he: string;
+    heChar: string;
+    band: string;
+    palette: ThemeItem["palette"];
+  };
+  ct: {
+    title: string;
+  };
+  variation: {
+    situation: string;
+  };
+  tutorVoice: {
+    name: string;
+    subtitle: string;
+  };
 };
 
 type DetailState =
@@ -183,10 +200,12 @@ const GAMES = [
   { id: "words", color: "#7BABC0", he: "מִלָּה", titleA: "Catch", titleB: "the word", sub: "Fill in the missing word in the sentence." }
 ];
 
-export function HomeScreen({ user }: Props) {
+export function HomeScreen({ user, onOpenConversation }: Props) {
   const [tab, setTab] = React.useState<TabKey>("home");
   const [launching, setLaunching] = React.useState<LaunchState | null>(null);
   const [detail, setDetail] = React.useState<DetailState | null>(null);
+  const [selectedVoiceName, setSelectedVoiceName] = React.useState("Dana");
+  const [activeScenarioSessionId, setActiveScenarioSessionId] = React.useState("");
 
   const todayThemeId = React.useMemo(() => {
     const day = Math.floor(Date.now() / 86400000);
@@ -198,6 +217,39 @@ export function HomeScreen({ user }: Props) {
   const otherThemes = THEMES.filter((theme) => theme.id !== todayTheme.id);
 
   React.useEffect(() => {
+    let active = true;
+
+    async function hydrateVoice() {
+      try {
+        const profile = await getCurrentUser(user);
+        const voiceId = profile.onboarding?.voice;
+
+        if (!active) {
+          return;
+        }
+
+        if (voiceId === "noam") {
+          setSelectedVoiceName("Noam");
+        } else if (voiceId === "shira") {
+          setSelectedVoiceName("Shira");
+        } else {
+          setSelectedVoiceName("Dana");
+        }
+      } catch {
+        if (active) {
+          setSelectedVoiceName("Dana");
+        }
+      }
+    }
+
+    void hydrateVoice();
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
+
+  React.useEffect(() => {
     if (!launching) {
       return;
     }
@@ -207,7 +259,7 @@ export function HomeScreen({ user }: Props) {
         kind: "scenario",
         eyebrow: launching.theme.band,
         title: `${launching.theme.title} · ${launching.ct.title}`,
-        body: launching.variation.situation,
+        body: `${launching.tutorVoice.name}: ${launching.variation.situation}`,
         action: "Start scene",
         secondaryAction: "New variation",
         tertiaryAction: "Close"
@@ -218,7 +270,7 @@ export function HomeScreen({ user }: Props) {
     return () => clearTimeout(timeout);
   }, [launching]);
 
-  function handleThemeTap(theme: ThemeItem) {
+  async function handleThemeTap(theme: ThemeItem) {
     if (theme.locked) {
       setDetail({
         kind: "roadmap",
@@ -230,9 +282,52 @@ export function HomeScreen({ user }: Props) {
       return;
     }
 
-    const ct = theme.cts[Math.floor(Math.random() * theme.cts.length)];
-    const variation = ct.variations[Math.floor(Math.random() * ct.variations.length)];
-    setLaunching({ theme, ct, variation });
+    try {
+      const response: ScenarioLaunchResponse = await launchScenario(user, theme.id, "gemini");
+      setActiveScenarioSessionId(response.sessionId);
+      setLaunching({
+        sessionId: response.sessionId,
+        theme: {
+          title: response.theme.title,
+          he: response.theme.he,
+          heChar: response.theme.heChar,
+          band: response.theme.band,
+          palette: theme.palette
+        },
+        ct: {
+          title: response.ct.title
+        },
+        variation: {
+          situation: response.variation.situation
+        },
+        tutorVoice: response.tutorVoice
+      });
+      setSelectedVoiceName(response.tutorVoice.name);
+    } catch {
+      setActiveScenarioSessionId("");
+      const ct = theme.cts[Math.floor(Math.random() * theme.cts.length)];
+      const variation = ct.variations[Math.floor(Math.random() * ct.variations.length)];
+      setLaunching({
+        sessionId: "",
+        theme: {
+          title: theme.title,
+          he: theme.he,
+          heChar: theme.heChar,
+          band: theme.band,
+          palette: theme.palette
+        },
+        ct: {
+          title: ct.title
+        },
+        variation: {
+          situation: variation.situation
+        },
+        tutorVoice: {
+          name: selectedVoiceName,
+          subtitle: ""
+        }
+      });
+    }
   }
 
   function handleRoadmapTap(stop: RoadmapStop) {
@@ -241,7 +336,7 @@ export function HomeScreen({ user }: Props) {
         kind: "roadmap",
         eyebrow: "NEXT LESSON",
         title: stop.title,
-        body: "This is the current active lesson in the path. The next production step would be to connect it to the conversation screen.",
+        body: `This is the current active lesson in the path with ${selectedVoiceName}. The next production step would be to connect it to the conversation screen.`,
         action: "Resume"
       });
       return;
@@ -289,14 +384,10 @@ export function HomeScreen({ user }: Props) {
   }
 
   function handleScenarioPrimary() {
-    setDetail((current) =>
-      current?.kind === "scenario"
-        ? {
-            ...current,
-            body: "Scenario start is now wired as a functional placeholder. The next step is connecting this to your real conversation screen and backend session flow."
-          }
-        : current
-    );
+    if (activeScenarioSessionId) {
+      setDetail(null);
+      onOpenConversation(activeScenarioSessionId);
+    }
   }
 
   function handleScenarioSecondary() {
@@ -333,7 +424,7 @@ export function HomeScreen({ user }: Props) {
                 <Text style={styles.heroHebrew}>בַּסּוּפֶּר</Text>
                 <Text style={styles.heroTitle}>At the supermarket</Text>
                 <Text style={styles.heroCopy}>
-                  Find the eggs. Ask the price. Pay with cash. 5 micro-steps with Dana.
+                  Find the eggs. Ask the price. Pay with cash. 5 micro-steps with {selectedVoiceName}.
                 </Text>
                 <Pressable style={styles.heroButton} onPress={() => handleRoadmapTap(ROADMAP_STOPS[4])}>
                   <Text style={styles.heroButtonText}>Resume</Text>
@@ -400,7 +491,7 @@ export function HomeScreen({ user }: Props) {
                 </View>
 
                 <View style={[styles.featuredThemeButton, { backgroundColor: todayTheme.palette.warm }]}>
-                  <Text style={styles.featuredThemeButtonText}>Step in</Text>
+                  <Text style={styles.featuredThemeButtonText}>Step in with {selectedVoiceName}</Text>
                   <Text style={styles.featuredThemeButtonText}>→</Text>
                 </View>
               </Pressable>
@@ -583,7 +674,7 @@ function TabButton({
 }
 
 function SceneLaunchOverlay({ launch }: { launch: LaunchState }) {
-  const { theme, variation } = launch;
+  const { theme, variation, tutorVoice } = launch;
 
   return (
     <View style={styles.overlayShell}>
@@ -596,6 +687,7 @@ function SceneLaunchOverlay({ launch }: { launch: LaunchState }) {
         </View>
         <Text style={styles.overlayHebrew}>{theme.he}</Text>
         <Text style={[styles.overlayTitle, { color: theme.palette.warm }]}>{theme.title}</Text>
+        <Text style={styles.overlayVoice}>{tutorVoice.name}</Text>
         <View style={styles.overlayRule} />
         <Text style={styles.overlaySituation}>{variation.situation}</Text>
       </View>
@@ -1372,6 +1464,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
     lineHeight: 34,
     textAlign: "center"
+  },
+  overlayVoice: {
+    color: "rgba(244,236,222,0.68)",
+    fontSize: 14,
+    letterSpacing: 1.5,
+    marginTop: 10
   },
   overlayRule: {
     width: 32,
