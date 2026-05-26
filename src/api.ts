@@ -16,15 +16,45 @@ type ApiError = {
   };
 };
 
+export type SyncUserResponse = {
+  uid: string;
+  isNewUser: boolean;
+};
+
+export type OnboardingPayload = {
+  native: string;
+  level: string;
+  goal: string;
+  voice: string;
+};
+
+export type UserProfile = {
+  uid: string;
+  email: string | null;
+  emailVerified: boolean;
+  displayName: string | null;
+  photoURL: string | null;
+  provider: string | null;
+  onboardingCompleted?: boolean;
+  onboarding?: OnboardingPayload;
+  isNewUser?: boolean;
+};
+
 async function request<T>(path: string, token: string, body?: unknown, method = "POST"): Promise<ApiSuccess<T>> {
-  const response = await fetch(`${appConfig.backendBaseUrl}${path}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${appConfig.backendBaseUrl}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+  } catch {
+    throw new Error(`Network request failed. Backend URL: ${appConfig.backendBaseUrl}`);
+  }
 
   const payload = (await response.json()) as ApiSuccess<T> | ApiError;
 
@@ -35,25 +65,31 @@ async function request<T>(path: string, token: string, body?: unknown, method = 
   return payload;
 }
 
-export async function syncUser(user: User): Promise<void> {
+export async function syncUser(user: User): Promise<SyncUserResponse> {
   const token = await user.getIdToken();
   const displayNameParts = (user.displayName || "").trim().split(/\s+/).filter(Boolean);
 
-  await request("/auth/sync-user", token, {
+  const response = await request<SyncUserResponse>("/auth/sync-user", token, {
     displayName: user.displayName || "",
     photoURL: user.photoURL || "",
     firstName: displayNameParts[0] || "",
     lastName: displayNameParts.slice(1).join(" "),
     username: user.email ? user.email.split("@")[0] : ""
   });
+
+  return response.details || { uid: user.uid, isNewUser: false };
 }
 
-export type OnboardingPayload = {
-  native: string;
-  level: string;
-  goal: string;
-  voice: string;
-};
+export async function getCurrentUser(user: User): Promise<UserProfile> {
+  const token = await user.getIdToken();
+  const response = await request<UserProfile>("/auth/me", token, undefined, "GET");
+
+  if (!response.details) {
+    throw new Error("User profile was not returned by the backend.");
+  }
+
+  return response.details;
+}
 
 export async function saveOnboarding(user: User, data: OnboardingPayload): Promise<void> {
   const token = await user.getIdToken();

@@ -14,11 +14,11 @@
       },
       "oauth_client": [
         {
-          "client_id": "219426011241-elum17f6r24hbnkru7sb1cl2h89m6c1b.apps.googleusercontent.com",
+          "client_id": "219426011241-deih59ils831728epvn176l28k58rofo.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.daber.app",
-            "certificate_hash": "56840d75f95e1051016c96f8ac786ddbaa651dd9"
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
           }
         },
         {

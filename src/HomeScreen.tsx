@@ -1,33 +1,645 @@
 import React from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { User } from "firebase/auth";
-import { signOut } from "firebase/auth";
+import { signOut, User } from "firebase/auth";
 import { auth } from "./firebase";
-import { colors, spacing } from "./theme";
+import { colors, radii } from "./theme";
 
 type Props = {
   user: User;
 };
 
+type TabKey = "home" | "scenarios" | "games";
+type StopKind = "done" | "checkpoint" | "current" | "locked";
+
+type RoadmapStop = {
+  id: string;
+  kind: StopKind;
+  title: string;
+  he: string;
+  fmt: string;
+};
+
+type ThemeItem = {
+  id: string;
+  title: string;
+  he: string;
+  heChar: string;
+  band: string;
+  blurb: string;
+  palette: {
+    warm: string;
+    deep: string;
+    tint: string;
+  };
+  locked?: boolean;
+  cts: Array<{
+    id: string;
+    title: string;
+    variations: Array<{
+      id: string;
+      label: string;
+      situation: string;
+    }>;
+  }>;
+};
+
+type LaunchState = {
+  theme: ThemeItem;
+  ct: ThemeItem["cts"][number];
+  variation: ThemeItem["cts"][number]["variations"][number];
+};
+
+type DetailState =
+  | {
+      kind: "roadmap";
+      title: string;
+      eyebrow: string;
+      body: string;
+      action: string;
+    }
+  | {
+      kind: "game";
+      title: string;
+      eyebrow: string;
+      body: string;
+      action: string;
+    }
+  | {
+      kind: "scenario";
+      title: string;
+      eyebrow: string;
+      body: string;
+      action: string;
+      secondaryAction: string;
+      tertiaryAction: string;
+    };
+
+const PATH_OFFSETS = [0, 30, 50, 20];
+
+const ROADMAP_STOPS: RoadmapStop[] = [
+  { id: "s1", kind: "done", title: "Falafel Stand", he: "דּוּכַן פָּלָאפֶל", fmt: "Roleplay" },
+  { id: "s2", kind: "done", title: "Greeting a Neighbor", he: "שָׁכֵן", fmt: "Roleplay" },
+  { id: "s3", kind: "done", title: "Numbers, 1–20", he: "מִסְפָּרִים", fmt: "Drill" },
+  { id: "cp1", kind: "checkpoint", title: "Checkpoint", he: "מִבְחָן", fmt: "Pick a format" },
+  { id: "s4", kind: "current", title: "At the Supermarket", he: "בַּסּוּפֶּר", fmt: "Roleplay" },
+  { id: "s5", kind: "locked", title: "Asking for Help", he: "מְבַקֵּשׁ עֶזְרָה", fmt: "Roleplay" },
+  { id: "s6", kind: "locked", title: "Café Order", he: "בְּבֵית קָפֶה", fmt: "Roleplay" },
+  { id: "tl1", kind: "locked", title: "Past Tense, men.", he: "עָבָר", fmt: "Tutor" },
+  { id: "cp2", kind: "locked", title: "Checkpoint", he: "מִבְחָן", fmt: "Pick a format" }
+];
+
+const THEMES: ThemeItem[] = [
+  {
+    id: "supermarket",
+    title: "Supermarket",
+    he: "בַּסּוּפֶּר",
+    heChar: "ס",
+    band: "A2–B1",
+    blurb: "Bright lights, plastic bags, and the strange social music of buying tomatoes.",
+    palette: { warm: "#E8B4A0", deep: "#B8462C", tint: "rgba(184,70,44,0.10)" },
+    cts: [
+      {
+        id: "big-salad",
+        title: "Big salad for dinner",
+        variations: [
+          { id: "calm-tuesday", label: "Calm Tuesday", situation: "A quiet Tuesday evening. The produce section is well-stocked and the staff have time to chat." },
+          { id: "friday-rush", label: "Friday rush", situation: "Friday afternoon before Shabbat. The produce section is picked-over and busy; some common items are sold out." },
+          { id: "chatty-elder", label: "Chatty shopper", situation: "Mid-morning. An elderly woman ahead of the learner is chatting at length with the produce worker about today's tomatoes. The learner is patient — no rush." },
+          { id: "rainy-sunday", label: "Rainy Sunday", situation: "A rainy Sunday. The store is unusually quiet and the produce worker is restocking, happy to chat about what looks good today." }
+        ]
+      }
+    ]
+  },
+  {
+    id: "cafe",
+    title: "Café",
+    he: "בֵּית קָפֶה",
+    heChar: "ק",
+    band: "A1–A2",
+    blurb: "Slow mornings, oat milk, and the espresso machine doing its theatrical hiss.",
+    palette: { warm: "#D9A35E", deep: "#8E5C28", tint: "rgba(217,163,94,0.14)" },
+    cts: [
+      {
+        id: "order",
+        title: "Ordering a drink + pastry",
+        variations: [
+          { id: "menu-overhead", label: "Menu only overhead", situation: "The menu is overhead on a chalkboard. The learner has to read fast or ask." },
+          { id: "sold-out", label: "The croissants are out", situation: "The croissants are gone. Yossi suggests alternatives." },
+          { id: "free-pour", label: "Barista's choice", situation: "Yossi suggests today's special — a single-origin pour-over." }
+        ]
+      }
+    ]
+  },
+  {
+    id: "shuk",
+    title: "Friday market",
+    he: "הַשּׁוּק",
+    heChar: "ש",
+    band: "B1",
+    blurb: "Voices yelling, oranges piled high, three kinds of olives, and a man selling halva on a wager.",
+    palette: { warm: "#C9B68A", deep: "#6B7A45", tint: "rgba(107,122,69,0.12)" },
+    cts: [
+      {
+        id: "haggle",
+        title: "Haggling at the spice stall",
+        variations: [
+          { id: "classic-game", label: "Classic dance", situation: "Friendly back-and-forth. The vendor enjoys the negotiation." },
+          { id: "firm", label: "Firm vendor", situation: "Today's prices are tight. Small movement possible only." },
+          { id: "fish-out-water", label: "Tourist tax", situation: "The vendor assumes tourist and prices accordingly. The learner has to push back." }
+        ]
+      }
+    ]
+  },
+  {
+    id: "ministry",
+    title: "Interior Ministry",
+    he: "מִשְׂרַד הַפְּנִים",
+    heChar: "מ",
+    band: "B1–B2",
+    blurb: "Numbered tickets, sticky chairs, and a clerk behind glass with a stamp older than you.",
+    palette: { warm: "#A8B5C5", deep: "#3F4A78", tint: "rgba(63,74,120,0.10)" },
+    locked: true
+    ,
+    cts: [
+      {
+        id: "renew-id",
+        title: "Renewing an ID",
+        variations: [
+          { id: "smooth", label: "Smooth", situation: "Quick day." },
+          { id: "missing-doc", label: "Missing doc", situation: "You forgot a document." },
+          { id: "wrong-window", label: "Wrong window", situation: "Sent to a different counter." }
+        ]
+      }
+    ]
+  }
+];
+
+const GAMES = [
+  { id: "translate", color: "#5B4B8A", he: "תַּרְגֵּם", titleA: "Switch", titleB: "tongues", sub: "Read a word. Pick the right translation." },
+  { id: "tf", color: colors.terracotta, he: "נָכוֹן אוֹ לֹא", titleA: "True", titleB: "or false", sub: "10 sentences. 30 seconds each." },
+  { id: "echo", color: colors.olive, he: "הֵד", titleA: "Hear it,", titleB: "echo it", sub: "Hear it. Repeat it. Score it." },
+  { id: "verbs", color: colors.gold, he: "פֹּעַל", titleA: "Match", titleB: "the verb", sub: "Match conjugations under pressure." },
+  { id: "words", color: "#7BABC0", he: "מִלָּה", titleA: "Catch", titleB: "the word", sub: "Fill in the missing word in the sentence." }
+];
+
 export function HomeScreen({ user }: Props) {
+  const [tab, setTab] = React.useState<TabKey>("home");
+  const [launching, setLaunching] = React.useState<LaunchState | null>(null);
+  const [detail, setDetail] = React.useState<DetailState | null>(null);
+
+  const todayThemeId = React.useMemo(() => {
+    const day = Math.floor(Date.now() / 86400000);
+    const ids = THEMES.filter((theme) => !theme.locked).map((theme) => theme.id);
+    return ids[day % ids.length];
+  }, []);
+
+  const todayTheme = THEMES.find((theme) => theme.id === todayThemeId) || THEMES[0];
+  const otherThemes = THEMES.filter((theme) => theme.id !== todayTheme.id);
+
+  React.useEffect(() => {
+    if (!launching) {
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      setDetail({
+        kind: "scenario",
+        eyebrow: launching.theme.band,
+        title: `${launching.theme.title} · ${launching.ct.title}`,
+        body: launching.variation.situation,
+        action: "Start scene",
+        secondaryAction: "New variation",
+        tertiaryAction: "Close"
+      });
+      setLaunching(null);
+    }, 1500);
+
+    return () => clearTimeout(timeout);
+  }, [launching]);
+
+  function handleThemeTap(theme: ThemeItem) {
+    if (theme.locked) {
+      setDetail({
+        kind: "roadmap",
+        eyebrow: "PRO WORLD",
+        title: theme.title,
+        body: "This world is locked in the prototype flow. Upgrade handling can plug in here next.",
+        action: "Close"
+      });
+      return;
+    }
+
+    const ct = theme.cts[Math.floor(Math.random() * theme.cts.length)];
+    const variation = ct.variations[Math.floor(Math.random() * ct.variations.length)];
+    setLaunching({ theme, ct, variation });
+  }
+
+  function handleRoadmapTap(stop: RoadmapStop) {
+    if (stop.kind === "current") {
+      setDetail({
+        kind: "roadmap",
+        eyebrow: "NEXT LESSON",
+        title: stop.title,
+        body: "This is the current active lesson in the path. The next production step would be to connect it to the conversation screen.",
+        action: "Resume"
+      });
+      return;
+    }
+
+    if (stop.kind === "checkpoint") {
+      setDetail({
+        kind: "roadmap",
+        eyebrow: "MILESTONE",
+        title: stop.title,
+        body: "Checkpoint screens are the next branch to wire. This slot is ready for a format picker or recap handoff.",
+        action: "Continue"
+      });
+      return;
+    }
+
+    if (stop.kind === "locked") {
+      setDetail({
+        kind: "roadmap",
+        eyebrow: "LOCKED",
+        title: stop.title,
+        body: "This stop is visible in the journey path but not yet unlocked for interaction.",
+        action: "Close"
+      });
+      return;
+    }
+
+    setDetail({
+      kind: "roadmap",
+      eyebrow: stop.fmt.toUpperCase(),
+      title: stop.title,
+      body: "Completed stop. This can later open recap, review, or replay behavior.",
+      action: "Review"
+    });
+  }
+
+  function handleGameTap(game: (typeof GAMES)[number]) {
+    setDetail({
+      kind: "game",
+      eyebrow: "GUIDED GAME",
+      title: `${game.titleA} ${game.titleB}`,
+      body: game.sub,
+      action: "Start"
+    });
+  }
+
+  function handleScenarioPrimary() {
+    setDetail((current) =>
+      current?.kind === "scenario"
+        ? {
+            ...current,
+            body: "Scenario start is now wired as a functional placeholder. The next step is connecting this to your real conversation screen and backend session flow."
+          }
+        : current
+    );
+  }
+
+  function handleScenarioSecondary() {
+    if (!launching && detail?.kind === "scenario") {
+      const theme = THEMES.find((item) => detail.title.startsWith(item.title));
+
+      if (theme) {
+        handleThemeTap(theme);
+        setDetail(null);
+      }
+    }
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <Text style={styles.eyebrow}>READY</Text>
-        <Text style={styles.title}>You’re signed in.</Text>
-        <Text style={styles.subtitle}>
-          {user.email || user.uid}
-        </Text>
-        <Text style={styles.caption}>
-          Auth sync and onboarding are connected to the backend. You can replace this screen with the rest of your app flow.
-        </Text>
-
-        <Pressable style={styles.button} onPress={() => signOut(auth)}>
-          <Text style={styles.buttonText}>Sign out</Text>
+      <View style={styles.topBar}>
+        <Text style={styles.wordmark}>דַּבֵּר</Text>
+        <View style={styles.topBarSpacer} />
+        <StatBadge tone="terracotta" symbol="✦" value="7" />
+        <StatBadge tone="gold" symbol="✦" value="240" />
+        <Pressable style={styles.proPill}>
+          <Text style={styles.proPillSymbol}>✦</Text>
+          <Text style={styles.proPillText}>PRO</Text>
         </Pressable>
       </View>
+
+      <View style={styles.contentArea}>
+        {tab === "home" ? (
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <View style={styles.heroWrap}>
+              <View style={styles.heroCard}>
+                <Text style={styles.heroWatermark}>ס</Text>
+                <Text style={styles.heroEyebrow}>NEXT · 4 MIN</Text>
+                <Text style={styles.heroHebrew}>בַּסּוּפֶּר</Text>
+                <Text style={styles.heroTitle}>At the supermarket</Text>
+                <Text style={styles.heroCopy}>
+                  Find the eggs. Ask the price. Pay with cash. 5 micro-steps with Dana.
+                </Text>
+                <Pressable style={styles.heroButton} onPress={() => handleRoadmapTap(ROADMAP_STOPS[4])}>
+                  <Text style={styles.heroButtonText}>Resume</Text>
+                  <Text style={styles.heroButtonText}>→</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionMono}>SECTION 02</Text>
+              <View style={styles.sectionRule} />
+              <Text style={styles.sectionMeta}>A2 · DAILY LIFE</Text>
+            </View>
+
+            <View style={styles.sectionBodyWrap}>
+              <Text style={styles.sectionTitle}>Errands & encounters.</Text>
+              <Text style={styles.sectionCopy}>9 stops. 3 done. 1 in progress.</Text>
+            </View>
+
+            <View style={styles.pathWrap}>
+              {ROADMAP_STOPS.map((stop, index) => (
+                <PathStop
+                  key={stop.id}
+                  stop={stop}
+                  index={index}
+                  last={index === ROADMAP_STOPS.length - 1}
+                  onPress={() => handleRoadmapTap(stop)}
+                />
+              ))}
+            </View>
+
+            <Pressable style={styles.profileNote} onPress={() => void signOut(auth)}>
+              <Text style={styles.profileNoteEyebrow}>SIGNED IN</Text>
+              <Text style={styles.profileNoteText}>{user.email || user.uid}</Text>
+              <Text style={styles.profileNoteAction}>Tap to sign out</Text>
+            </Pressable>
+          </ScrollView>
+        ) : null}
+
+        {tab === "scenarios" ? (
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <View style={styles.scenariosHeader}>
+              <Text style={styles.sectionMono}>SCENARIOS</Text>
+              <Text style={styles.scenariosTitle}>
+                Worlds to <Text style={styles.scenariosItalic}>step into.</Text>
+              </Text>
+              <Text style={styles.scenariosCopy}>
+                Pick a world and start talking. Every visit feels a little different — same place, different day.
+              </Text>
+            </View>
+
+            <View style={styles.featuredThemeWrap}>
+              <Pressable style={styles.featuredThemeCard} onPress={() => handleThemeTap(todayTheme)}>
+                <Text style={[styles.featuredThemeWatermark, { color: todayTheme.palette.warm }]}>{todayTheme.heChar}</Text>
+                <View style={styles.featuredThemeTopRow}>
+                  <View style={[styles.featuredThemeDot, { backgroundColor: todayTheme.palette.warm }]} />
+                  <Text style={[styles.featuredThemeToday, { color: todayTheme.palette.warm }]}>TODAY</Text>
+                </View>
+
+                <View>
+                  <Text style={styles.featuredThemeHebrew}>{todayTheme.he}</Text>
+                  <Text style={styles.featuredThemeTitle}>{todayTheme.title}</Text>
+                  <Text style={styles.featuredThemeBlurb}>{todayTheme.blurb}</Text>
+                </View>
+
+                <View style={[styles.featuredThemeButton, { backgroundColor: todayTheme.palette.warm }]}>
+                  <Text style={styles.featuredThemeButtonText}>Step in</Text>
+                  <Text style={styles.featuredThemeButtonText}>→</Text>
+                </View>
+              </Pressable>
+            </View>
+
+            <View style={styles.themeRowsWrap}>
+              {otherThemes.map((theme) => (
+                <Pressable key={theme.id} style={styles.themeRow} onPress={() => handleThemeTap(theme)}>
+                  <Text style={[styles.themeRowWatermark, { color: theme.palette.tint }]}>{theme.heChar}</Text>
+                  <View style={[styles.themeRowDot, { backgroundColor: theme.palette.deep }]} />
+                  <View style={styles.themeRowBody}>
+                    <Text style={styles.themeRowHebrew}>{theme.he}</Text>
+                    <Text style={styles.themeRowTitle}>{theme.title}</Text>
+                    <Text style={styles.themeRowBlurb} numberOfLines={1}>{theme.blurb}</Text>
+                  </View>
+                  {theme.locked ? (
+                    <View style={styles.themeRowProPill}>
+                      <Text style={styles.themeRowProText}>PRO</Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.themeRowArrow}>→</Text>
+                  )}
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+        ) : null}
+
+        {tab === "games" ? (
+          <ScrollView showsVerticalScrollIndicator={false}>
+            <View style={styles.gamesHeader}>
+              <Text style={styles.sectionMono}>GUIDED GAMES · ARCADE</Text>
+              <Text style={styles.gamesTitle}>
+                Quick reps,{"\n"}
+                <Text style={styles.gamesItalic}>fast feedback.</Text>
+              </Text>
+              <Text style={styles.gamesCopy}>Four bite-sized drills. Each ends in 2–3 minutes.</Text>
+            </View>
+
+            <View style={styles.gamesList}>
+              {GAMES.map((game) => (
+                <Pressable key={game.id} style={[styles.gameCard, { backgroundColor: game.color }]} onPress={() => handleGameTap(game)}>
+                  <Text style={styles.gameWatermark}>{game.he.charAt(0)}</Text>
+                  <View style={styles.gameIcon}>
+                    <Text style={styles.gameIconText}>✦</Text>
+                  </View>
+                  <View style={styles.gameBody}>
+                    <Text style={styles.gameHebrew}>{game.he}</Text>
+                    <Text style={styles.gameTitle}>{game.titleA} {game.titleB}</Text>
+                    <Text style={styles.gameSub}>{game.sub}</Text>
+                  </View>
+                  <Text style={styles.gameArrow}>→</Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+        ) : null}
+      </View>
+
+      <View style={styles.tabBar}>
+        <TabButton label="Path" icon="⌂" active={tab === "home"} onPress={() => setTab("home")} />
+        <TabButton label="Scenarios" icon="◫" active={tab === "scenarios"} onPress={() => setTab("scenarios")} />
+        <TabButton label="Games" icon="✦" active={tab === "games"} onPress={() => setTab("games")} />
+      </View>
+
+      {launching ? <SceneLaunchOverlay launch={launching} /> : null}
+      {detail ? (
+        <DetailOverlay
+          detail={detail}
+          onClose={() => setDetail(null)}
+          onPrimaryAction={detail.kind === "scenario" ? handleScenarioPrimary : undefined}
+          onSecondaryAction={detail.kind === "scenario" ? handleScenarioSecondary : undefined}
+        />
+      ) : null}
     </SafeAreaView>
+  );
+}
+
+function StatBadge({ tone, symbol, value }: { tone: "terracotta" | "gold"; symbol: string; value: string }) {
+  const isGold = tone === "gold";
+
+  return (
+    <View style={[styles.badge, isGold ? styles.badgeGold : styles.badgeTerracotta]}>
+      <Text style={[styles.badgeSymbol, isGold ? styles.badgeSymbolGold : styles.badgeSymbolTerracotta]}>{symbol}</Text>
+      <Text style={[styles.badgeValue, isGold ? styles.badgeValueGold : styles.badgeValueTerracotta]}>{value}</Text>
+    </View>
+  );
+}
+
+function PathStop({
+  stop,
+  index,
+  last,
+  onPress
+}: {
+  stop: RoadmapStop;
+  index: number;
+  last: boolean;
+  onPress: () => void;
+}) {
+  const offset = PATH_OFFSETS[index % PATH_OFFSETS.length];
+  const nextOffset = PATH_OFFSETS[(index + 1) % PATH_OFFSETS.length];
+  const connectorMargin = nextOffset - offset;
+
+  return (
+    <View style={styles.pathStopShell}>
+      {!last ? (
+        <View style={[styles.connectorWrap, { marginLeft: offset + 30 }]}>
+          <View
+            style={[
+              styles.connectorVertical,
+              stop.kind === "done" ? styles.connectorDone : stop.kind === "current" ? styles.connectorCurrent : styles.connectorLocked
+            ]}
+          />
+          <View
+            style={[
+              styles.connectorBend,
+              { marginLeft: connectorMargin },
+              stop.kind === "done" ? styles.connectorDone : stop.kind === "current" ? styles.connectorCurrent : styles.connectorLocked
+            ]}
+          />
+        </View>
+      ) : null}
+
+      {stop.kind === "checkpoint" ? (
+        <Pressable style={[styles.pathRow, { paddingLeft: offset }]} onPress={onPress}>
+          <View style={styles.checkpointMarker}>
+            <Text style={styles.checkpointMarkerInner}>✦</Text>
+          </View>
+          <View style={styles.pathText}>
+            <Text style={[styles.pathLabel, styles.pathLabelMilestone]}>MILESTONE</Text>
+            <Text style={styles.pathTitle}>{stop.title} — {stop.fmt}</Text>
+            <Text style={styles.pathHebrew}>{stop.he}</Text>
+          </View>
+        </Pressable>
+      ) : (
+        <Pressable style={[styles.pathRow, { paddingLeft: offset }]} onPress={onPress}>
+          <View
+            style={[
+              styles.pathMarker,
+              stop.kind === "done" ? styles.pathMarkerDone : null,
+              stop.kind === "current" ? styles.pathMarkerCurrent : null,
+              stop.kind === "locked" ? styles.pathMarkerLocked : null
+            ]}
+          >
+            <Text style={[styles.pathMarkerText, stop.kind === "locked" ? styles.pathMarkerTextLocked : null]}>
+              {stop.kind === "done" ? "✓" : stop.kind === "current" ? "▶" : "⌂"}
+            </Text>
+          </View>
+          <View style={[styles.pathText, stop.kind === "locked" ? styles.pathTextLocked : null]}>
+            <Text style={[styles.pathLabel, stop.kind === "current" ? styles.pathLabelCurrent : null]}>
+              {stop.fmt}{stop.kind === "current" ? " · NEXT" : ""}
+            </Text>
+            <Text style={styles.pathTitle}>{stop.title}</Text>
+            <Text style={styles.pathHebrew}>{stop.he}</Text>
+          </View>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function TabButton({
+  label,
+  icon,
+  active,
+  onPress
+}: {
+  label: string;
+  icon: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.tabButton} onPress={onPress}>
+      <Text style={[styles.tabIcon, active ? styles.tabIconActive : null]}>{icon}</Text>
+      <Text style={[styles.tabLabel, active ? styles.tabLabelActive : null]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function SceneLaunchOverlay({ launch }: { launch: LaunchState }) {
+  const { theme, variation } = launch;
+
+  return (
+    <View style={styles.overlayShell}>
+      <Text style={[styles.overlayWatermark, { color: theme.palette.warm }]}>{theme.heChar}</Text>
+      <View style={[styles.overlayGlow, { backgroundColor: `${theme.palette.warm}22` }]} />
+      <View style={styles.overlayContent}>
+        <View style={styles.overlayTopRow}>
+          <View style={[styles.overlayDot, { backgroundColor: theme.palette.warm }]} />
+          <Text style={[styles.overlayEyebrow, { color: theme.palette.warm }]}>STEPPING INTO</Text>
+        </View>
+        <Text style={styles.overlayHebrew}>{theme.he}</Text>
+        <Text style={[styles.overlayTitle, { color: theme.palette.warm }]}>{theme.title}</Text>
+        <View style={styles.overlayRule} />
+        <Text style={styles.overlaySituation}>{variation.situation}</Text>
+      </View>
+    </View>
+  );
+}
+
+function DetailOverlay({
+  detail,
+  onClose,
+  onPrimaryAction,
+  onSecondaryAction
+}: {
+  detail: DetailState;
+  onClose: () => void;
+  onPrimaryAction?: () => void;
+  onSecondaryAction?: () => void;
+}) {
+  return (
+    <View style={styles.detailOverlay}>
+      <Pressable style={styles.detailBackdrop} onPress={onClose} />
+      <View style={styles.detailCard}>
+        <Text style={styles.detailEyebrow}>{detail.eyebrow}</Text>
+        <Text style={styles.detailTitle}>{detail.title}</Text>
+        <Text style={styles.detailBody}>{detail.body}</Text>
+        {detail.kind === "scenario" ? (
+          <View style={styles.detailActions}>
+            <Pressable style={styles.detailButton} onPress={onPrimaryAction}>
+              <Text style={styles.detailButtonText}>{detail.action}</Text>
+            </Pressable>
+            <Pressable style={styles.detailButtonSecondary} onPress={onSecondaryAction}>
+              <Text style={styles.detailButtonSecondaryText}>{detail.secondaryAction}</Text>
+            </Pressable>
+            <Pressable style={styles.detailButtonGhost} onPress={onClose}>
+              <Text style={styles.detailButtonGhostText}>{detail.tertiaryAction}</Text>
+            </Pressable>
+          </View>
+        ) : (
+          <Pressable style={styles.detailButton} onPress={onClose}>
+            <Text style={styles.detailButtonText}>{detail.action}</Text>
+          </Pressable>
+        )}
+      </View>
+    </View>
   );
 }
 
@@ -36,44 +648,742 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.bone
   },
-  container: {
-    flex: 1,
-    paddingHorizontal: spacing.screenX,
-    paddingVertical: spacing.screenY,
-    justifyContent: "center"
+  topBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 24,
+    paddingTop: 10,
+    paddingBottom: 12
   },
-  eyebrow: {
-    color: colors.inkMute,
+  wordmark: {
+    fontSize: 22,
+    color: colors.ink,
+    fontWeight: "700"
+  },
+  topBarSpacer: {
+    flex: 1
+  },
+  badge: {
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: radii.pill,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6
+  },
+  badgeTerracotta: {
+    backgroundColor: "rgba(184,70,44,0.1)"
+  },
+  badgeGold: {
+    backgroundColor: "rgba(217,163,94,0.18)"
+  },
+  badgeSymbol: {
+    fontSize: 12
+  },
+  badgeSymbolTerracotta: {
+    color: colors.terracotta
+  },
+  badgeSymbolGold: {
+    color: colors.gold
+  },
+  badgeValue: {
     fontSize: 12,
+    fontWeight: "600"
+  },
+  badgeValueTerracotta: {
+    color: colors.terracotta
+  },
+  badgeValueGold: {
+    color: colors.ink
+  },
+  proPill: {
+    minHeight: 30,
+    paddingHorizontal: 10,
+    borderRadius: radii.pill,
+    backgroundColor: colors.ink,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6
+  },
+  proPillSymbol: {
+    color: colors.gold,
+    fontSize: 11
+  },
+  proPillText: {
+    color: colors.gold,
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 1
+  },
+  contentArea: {
+    flex: 1
+  },
+  heroWrap: {
+    paddingHorizontal: 24,
+    paddingTop: 4,
+    paddingBottom: 20
+  },
+  heroCard: {
+    backgroundColor: colors.ink,
+    borderRadius: radii.lg,
+    paddingHorizontal: 22,
+    paddingVertical: 20,
+    overflow: "hidden"
+  },
+  heroWatermark: {
+    position: "absolute",
+    right: -10,
+    top: -30,
+    fontSize: 200,
+    color: "rgba(244,236,222,0.06)",
+    lineHeight: 200
+  },
+  heroEyebrow: {
+    color: colors.gold,
+    fontSize: 11,
     letterSpacing: 2,
+    marginBottom: 8
+  },
+  heroHebrew: {
+    color: colors.bone,
+    fontSize: 28,
+    marginBottom: 4
+  },
+  heroTitle: {
+    color: colors.bone,
+    fontSize: 26,
+    fontStyle: "italic",
     marginBottom: 12
   },
-  title: {
-    fontSize: 36,
+  heroCopy: {
+    color: "rgba(244,236,222,0.65)",
+    fontSize: 13,
+    lineHeight: 18,
+    marginBottom: 18,
+    maxWidth: 280
+  },
+  heroButton: {
+    alignSelf: "flex-start",
+    minHeight: 42,
+    paddingHorizontal: 20,
+    borderRadius: radii.pill,
+    backgroundColor: colors.terracotta,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  heroButtonText: {
+    color: colors.bone,
+    fontSize: 14,
+    fontWeight: "600"
+  },
+  sectionHeader: {
+    paddingHorizontal: 24,
+    paddingBottom: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12
+  },
+  sectionMono: {
+    color: colors.inkMute,
+    fontSize: 11,
+    letterSpacing: 2
+  },
+  sectionRule: {
+    flex: 1,
+    height: 1,
+    backgroundColor: colors.line
+  },
+  sectionMeta: {
+    color: colors.inkMute,
+    fontSize: 11,
+    letterSpacing: 1
+  },
+  sectionBodyWrap: {
+    paddingHorizontal: 24,
+    paddingBottom: 8
+  },
+  sectionTitle: {
     color: colors.ink,
-    lineHeight: 42
+    fontSize: 28,
+    marginBottom: 6
   },
-  subtitle: {
-    marginTop: 12,
+  sectionCopy: {
+    color: colors.inkMute,
+    fontSize: 13
+  },
+  pathWrap: {
+    paddingHorizontal: 24,
+    paddingTop: 20,
+    paddingBottom: 36
+  },
+  pathStopShell: {
+    position: "relative",
+    minHeight: 88,
+    marginBottom: 6
+  },
+  connectorWrap: {
+    position: "absolute",
+    top: 64,
+    width: 90,
+    height: 42
+  },
+  connectorVertical: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: 2,
+    height: 18,
+    borderRadius: radii.pill
+  },
+  connectorBend: {
+    position: "absolute",
+    left: 0,
+    top: 18,
+    width: 34,
+    height: 18,
+    borderBottomWidth: 2,
+    borderLeftWidth: 2,
+    borderBottomLeftRadius: 18
+  },
+  connectorDone: {
+    backgroundColor: colors.olive,
+    borderColor: colors.olive
+  },
+  connectorCurrent: {
+    backgroundColor: colors.terracotta,
+    borderColor: colors.terracotta
+  },
+  connectorLocked: {
+    backgroundColor: "rgba(26,20,16,0.16)",
+    borderColor: "rgba(26,20,16,0.16)"
+  },
+  pathRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14
+  },
+  pathMarker: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  pathMarkerDone: {
+    backgroundColor: colors.olive
+  },
+  pathMarkerCurrent: {
+    backgroundColor: colors.terracotta,
+    shadowColor: colors.terracotta,
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 6
+  },
+  pathMarkerLocked: {
+    backgroundColor: "rgba(26,20,16,0.04)",
+    borderWidth: 1,
+    borderColor: colors.lineStrong
+  },
+  pathMarkerText: {
+    color: colors.bone,
+    fontSize: 18,
+    fontWeight: "700"
+  },
+  pathMarkerTextLocked: {
+    color: colors.inkFaint
+  },
+  checkpointMarker: {
+    width: 64,
+    height: 64,
+    borderRadius: 12,
+    backgroundColor: colors.ink,
+    alignItems: "center",
+    justifyContent: "center",
+    transform: [{ rotate: "45deg" }],
+    shadowColor: "#000",
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 4
+  },
+  checkpointMarkerInner: {
+    color: colors.gold,
+    fontSize: 22,
+    transform: [{ rotate: "-45deg" }]
+  },
+  pathText: {
+    flex: 1
+  },
+  pathTextLocked: {
+    opacity: 0.5
+  },
+  pathLabel: {
+    color: colors.inkMute,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    marginBottom: 2
+  },
+  pathLabelCurrent: {
+    color: colors.terracotta
+  },
+  pathLabelMilestone: {
+    color: colors.gold
+  },
+  pathTitle: {
+    color: colors.ink,
+    fontSize: 16,
+    fontWeight: "500"
+  },
+  pathHebrew: {
+    color: colors.inkMute,
+    fontSize: 18,
+    marginTop: 2
+  },
+  profileNote: {
+    marginHorizontal: 24,
+    marginBottom: 28,
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.paper
+  },
+  profileNoteEyebrow: {
+    color: colors.inkMute,
+    fontSize: 11,
+    letterSpacing: 2,
+    marginBottom: 4
+  },
+  profileNoteText: {
+    color: colors.ink,
+    fontSize: 14
+  },
+  profileNoteAction: {
     color: colors.terracotta,
-    fontSize: 16
+    fontSize: 12,
+    marginTop: 6
   },
-  caption: {
-    marginTop: 18,
+  scenariosHeader: {
+    paddingHorizontal: 24,
+    paddingTop: 4,
+    paddingBottom: 22
+  },
+  scenariosTitle: {
+    color: colors.ink,
+    fontSize: 34,
+    lineHeight: 34,
+    marginTop: 8
+  },
+  scenariosItalic: {
+    fontStyle: "italic"
+  },
+  scenariosCopy: {
+    fontSize: 13.5,
+    color: colors.inkMute,
+    marginTop: 10,
+    lineHeight: 20,
+    maxWidth: 320
+  },
+  featuredThemeWrap: {
+    paddingHorizontal: 18,
+    paddingBottom: 14
+  },
+  featuredThemeCard: {
+    minHeight: 200,
+    borderRadius: 28,
+    backgroundColor: colors.ink,
+    paddingHorizontal: 22,
+    paddingVertical: 20,
+    justifyContent: "space-between",
+    overflow: "hidden"
+  },
+  featuredThemeWatermark: {
+    position: "absolute",
+    right: -22,
+    top: -44,
+    fontSize: 280,
+    lineHeight: 280,
+    opacity: 0.1,
+    fontWeight: "700"
+  },
+  featuredThemeTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
+  featuredThemeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999
+  },
+  featuredThemeToday: {
+    fontSize: 11,
+    letterSpacing: 2
+  },
+  featuredThemeHebrew: {
+    color: colors.bone,
+    fontSize: 38,
+    fontWeight: "700",
+    lineHeight: 38
+  },
+  featuredThemeTitle: {
+    color: colors.bone,
+    fontSize: 30,
+    fontStyle: "italic",
+    lineHeight: 30,
+    marginTop: 4
+  },
+  featuredThemeBlurb: {
+    color: "rgba(244,236,222,0.68)",
+    fontSize: 14.5,
+    lineHeight: 20,
+    marginTop: 12,
+    fontStyle: "italic",
+    maxWidth: 320
+  },
+  featuredThemeButton: {
+    alignSelf: "flex-start",
+    minHeight: 44,
+    paddingHorizontal: 18,
+    borderRadius: radii.pill,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  featuredThemeButtonText: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "500"
+  },
+  themeRowsWrap: {
+    paddingHorizontal: 18,
+    paddingBottom: 36,
+    gap: 10
+  },
+  themeRow: {
+    minHeight: 88,
+    borderRadius: radii.lg,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.paper,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    overflow: "hidden"
+  },
+  themeRowWatermark: {
+    position: "absolute",
+    right: -8,
+    top: "50%",
+    fontSize: 130,
+    lineHeight: 130,
+    marginTop: -55,
+    fontWeight: "700"
+  },
+  themeRowDot: {
+    width: 44,
+    height: 44,
+    borderRadius: 22
+  },
+  themeRowBody: {
+    flex: 1
+  },
+  themeRowHebrew: {
+    color: colors.ink,
+    fontSize: 22,
+    lineHeight: 22,
+    fontWeight: "700"
+  },
+  themeRowTitle: {
+    color: colors.ink,
+    fontSize: 22,
+    lineHeight: 23,
+    marginTop: 2,
+    fontStyle: "italic"
+  },
+  themeRowBlurb: {
+    color: colors.inkMute,
+    fontSize: 12.5,
+    lineHeight: 16,
+    marginTop: 6
+  },
+  themeRowArrow: {
+    color: colors.inkMute,
+    fontSize: 18
+  },
+  themeRowProPill: {
+    minHeight: 24,
+    paddingHorizontal: 8,
+    borderRadius: radii.pill,
+    backgroundColor: colors.ink,
+    justifyContent: "center"
+  },
+  themeRowProText: {
+    color: colors.gold,
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.8
+  },
+  gamesHeader: {
+    paddingHorizontal: 24,
+    paddingTop: 4,
+    paddingBottom: 20
+  },
+  gamesTitle: {
+    color: colors.ink,
+    fontSize: 32,
+    lineHeight: 36,
+    marginTop: 6
+  },
+  gamesItalic: {
+    fontStyle: "italic"
+  },
+  gamesCopy: {
+    color: colors.inkMute,
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 8
+  },
+  gamesList: {
+    paddingHorizontal: 24,
+    paddingBottom: 32,
+    gap: 12
+  },
+  gameCard: {
+    minHeight: 110,
+    paddingHorizontal: 22,
+    paddingVertical: 20,
+    borderRadius: radii.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 16,
+    overflow: "hidden"
+  },
+  gameWatermark: {
+    position: "absolute",
+    right: -14,
+    top: -36,
+    fontSize: 150,
+    color: "rgba(244,236,222,0.08)"
+  },
+  gameIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 14,
+    backgroundColor: "rgba(244,236,222,0.18)",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  gameIconText: {
+    color: colors.bone,
+    fontSize: 18
+  },
+  gameBody: {
+    flex: 1
+  },
+  gameHebrew: {
+    color: colors.bone,
+    fontSize: 22,
+    marginBottom: 2
+  },
+  gameTitle: {
+    color: colors.bone,
+    fontSize: 15,
+    fontWeight: "500"
+  },
+  gameSub: {
+    color: "rgba(244,236,222,0.85)",
+    fontSize: 12,
+    marginTop: 4
+  },
+  gameArrow: {
+    color: colors.bone,
+    fontSize: 20,
+    fontWeight: "700"
+  },
+  detailOverlay: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    justifyContent: "flex-end"
+  },
+  detailBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(26,20,16,0.36)"
+  },
+  detailCard: {
+    backgroundColor: colors.bone,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 30,
+    borderTopWidth: 1,
+    borderColor: colors.line
+  },
+  detailEyebrow: {
+    color: colors.inkMute,
+    fontSize: 11,
+    letterSpacing: 2,
+    marginBottom: 10
+  },
+  detailTitle: {
+    color: colors.ink,
+    fontSize: 28,
+    lineHeight: 30,
+    marginBottom: 10
+  },
+  detailBody: {
     color: colors.inkMute,
     fontSize: 14,
-    lineHeight: 22
+    lineHeight: 21,
+    marginBottom: 18
   },
-  button: {
-    marginTop: 28,
+  detailActions: {
+    gap: 10
+  },
+  detailButton: {
+    minHeight: 48,
+    borderRadius: radii.pill,
     backgroundColor: colors.ink,
-    borderRadius: 999,
-    paddingVertical: 16,
-    alignItems: "center"
+    alignItems: "center",
+    justifyContent: "center"
   },
-  buttonText: {
+  detailButtonText: {
     color: colors.bone,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: "600"
+  },
+  detailButtonSecondary: {
+    minHeight: 46,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.paper,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  detailButtonSecondaryText: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: "500"
+  },
+  detailButtonGhost: {
+    minHeight: 42,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  detailButtonGhostText: {
+    color: colors.inkMute,
+    fontSize: 14
+  },
+  tabBar: {
+    flexDirection: "row",
+    borderTopWidth: 1,
+    borderTopColor: colors.line,
+    backgroundColor: "rgba(255,253,247,0.94)"
+  },
+  tabButton: {
+    flex: 1,
+    minHeight: 66,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  tabIcon: {
+    color: colors.inkMute,
+    fontSize: 16,
+    marginBottom: 2
+  },
+  tabIconActive: {
+    color: colors.ink
+  },
+  tabLabel: {
+    color: colors.inkMute,
+    fontSize: 12,
+    fontWeight: "500"
+  },
+  tabLabelActive: {
+    color: colors.ink
+  },
+  overlayShell: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: colors.ink,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 36,
+    overflow: "hidden"
+  },
+  overlayWatermark: {
+    position: "absolute",
+    right: "-10%",
+    top: "-10%",
+    fontSize: 360,
+    lineHeight: 360,
+    opacity: 0.1,
+    fontWeight: "700"
+  },
+  overlayGlow: {
+    position: "absolute",
+    width: 420,
+    height: 420,
+    borderRadius: 210,
+    opacity: 1
+  },
+  overlayContent: {
+    alignItems: "center",
+    maxWidth: 300
+  },
+  overlayTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 14
+  },
+  overlayDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 999
+  },
+  overlayEyebrow: {
+    fontSize: 11,
+    letterSpacing: 2
+  },
+  overlayHebrew: {
+    color: colors.bone,
+    fontSize: 52,
+    fontWeight: "700",
+    lineHeight: 52,
+    textAlign: "center"
+  },
+  overlayTitle: {
+    fontSize: 34,
+    fontStyle: "italic",
+    marginTop: 4,
+    lineHeight: 34,
+    textAlign: "center"
+  },
+  overlayRule: {
+    width: 32,
+    height: 1,
+    backgroundColor: "rgba(244,236,222,0.3)",
+    marginVertical: 18
+  },
+  overlaySituation: {
+    color: "rgba(244,236,222,0.85)",
+    fontSize: 17,
+    lineHeight: 26,
+    textAlign: "center",
+    fontStyle: "italic"
   }
 });

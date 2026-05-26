@@ -56,3 +56,24 @@ The app expects these backend routes:
 - Apple sign-in only works on iOS with proper Firebase Apple provider setup.
 - Google sign-in requires Firebase Google provider setup and the correct client IDs.
 - Email/password login and registration work with Firebase Auth and backend sync.
+
+## Google Sign-In Android fix
+
+If Android shows `DEVELOPER_ERROR`, the OAuth Android client in Firebase is not using the same signing certificate as the installed app build.
+
+Current local debug keystore SHA-1:
+
+```text
+5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25
+```
+
+Firebase project `daber-1470e` currently has a different Android OAuth SHA-1 in `google-services.json`, so Google native sign-in will fail until that is corrected.
+
+Fix steps:
+
+1. Open Firebase Console for project `daber-1470e`.
+2. Go to Project settings -> Your apps -> Android app `com.daber.app`.
+3. Add the SHA-1 above.
+4. Download the updated `google-services.json`.
+5. Replace both `Daber-app/google-services.json` and `Daber-app/android/app/google-services.json`.
+6. Rebuild the Android app.

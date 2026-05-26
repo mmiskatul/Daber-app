@@ -58,8 +58,21 @@ export async function loginWithGoogle(): Promise<User> {
 
   configureGoogleSignIn();
   await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+  let response;
 
-  const response = await GoogleSignin.signIn();
+  try {
+    response = await GoogleSignin.signIn();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (message.includes("DEVELOPER_ERROR")) {
+      throw new Error(
+        "Google Sign-In Android config mismatch. Add this app signing SHA-1 to Firebase/Google Cloud OAuth for package com.daber.app, then download a fresh google-services.json. Current debug SHA-1: 5E:8F:16:06:2E:A3:CD:2C:4A:0D:54:78:76:BA:A6:F3:8C:AB:F6:25."
+      );
+    }
+
+    throw error;
+  }
 
   if (isCancelledResponse(response)) {
     throw new Error("Google sign-in was cancelled.");
