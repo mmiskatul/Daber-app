@@ -18,6 +18,7 @@ import {
   useAudioRecorder,
   useAudioRecorderState
 } from "expo-audio";
+import * as Speech from "expo-speech";
 import { User } from "firebase/auth";
 import {
   getScenarioSession,
@@ -94,11 +95,28 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [showCorrectionSheet, setShowCorrectionSheet] = React.useState(false);
   const [showSceneMenu, setShowSceneMenu] = React.useState(false);
   const [showTranslations, setShowTranslations] = React.useState<Record<number, boolean>>({});
+  const [autoSpeakEnabled, setAutoSpeakEnabled] = React.useState(true);
   const [error, setError] = React.useState("");
   const [mode, setMode] = React.useState<Mode>("speaking");
   const [recordingReady, setRecordingReady] = React.useState(false);
+  const lastSpokenTutorTurnRef = React.useRef("");
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
+
+  const speakPhrase = React.useCallback((text: string) => {
+    const clean = stripNiqqud(text).trim();
+
+    if (!clean) {
+      return;
+    }
+
+    Speech.stop();
+    Speech.speak(clean, {
+      language: "he-IL",
+      pitch: 1.0,
+      rate: 0.92
+    });
+  }, []);
 
   React.useEffect(() => {
     let active = true;
@@ -192,6 +210,29 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       setMode("listening");
     }
   }, [recorderState.isRecording, sending, turns]);
+
+  React.useEffect(() => {
+    const lastTurn = turns[turns.length - 1];
+
+    if (!autoSpeakEnabled || !lastTurn || lastTurn.role !== "tutor") {
+      return;
+    }
+
+    const turnKey = `${lastTurn.createdAt}:${lastTurn.text}`;
+
+    if (lastSpokenTutorTurnRef.current === turnKey) {
+      return;
+    }
+
+    lastSpokenTutorTurnRef.current = turnKey;
+    speakPhrase(lastTurn.text);
+  }, [autoSpeakEnabled, speakPhrase, turns]);
+
+  React.useEffect(() => {
+    return () => {
+      Speech.stop();
+    };
+  }, []);
 
   async function handleSendMessage() {
     const message = textValue.trim();
@@ -368,7 +409,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         </Pressable>
 
         <Pressable onPress={() => setShowSceneMenu(true)} style={styles.topPill}>
-          <Text style={styles.settingsPillText}>⚙</Text>
+          <SettingsGlyph />
         </Pressable>
       </View>
 
@@ -397,6 +438,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               showTranslation={!!showTranslations[index]}
               onToggleTranslation={() => toggleTranslation(index)}
               onSeeMore={() => setShowCorrectionSheet(true)}
+              onReplay={() => speakPhrase(turn.text)}
             />
           ))}
           {error ? (
@@ -435,7 +477,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                       <Text style={styles.sheetItemText}>{item.he}</Text>
                       <Text style={styles.sheetItemSubText}>"{item.en}"</Text>
                     </View>
-                    <Text style={styles.sheetItemVolume}>🔊</Text>
+                    <View style={styles.sheetItemListen}><SpeakerGlyph tone="terracotta" compact /></View>
                   </View>
                 </Pressable>
               ))}
@@ -489,7 +531,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                 <Text style={styles.correctionBtnGhostText}>Skip</Text>
               </Pressable>
               <Pressable style={styles.correctionBtnTerra} onPress={() => setShowCorrectionSheet(false)}>
-                <Text style={styles.correctionBtnTerraText}>🎤 Practice it</Text>
+                <View style={styles.correctionBtnTerraInner}><MicGlyph tone="bone" /><Text style={styles.correctionBtnTerraText}>Practice it</Text></View>
               </Pressable>
             </View>
           </View>
@@ -508,6 +550,16 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
             <View style={styles.sheetGrabber} />
             <Text style={styles.sheetEyebrow}>SCENE</Text>
             <Text style={styles.sheetTitle}>Conversation controls</Text>
+            <Pressable style={styles.sheetItem} onPress={() => setAutoSpeakEnabled((value) => !value)}>
+              <Text style={styles.sheetItemActionTitle}>
+                {autoSpeakEnabled ? "Tutor voice is on" : "Tutor voice is off"}
+              </Text>
+              <Text style={styles.sheetItemSubText}>
+                {autoSpeakEnabled
+                  ? "AI replies speak automatically. Tap to mute them."
+                  : "AI replies are muted. Tap to turn speech back on."}
+              </Text>
+            </Pressable>
             <Pressable style={styles.sheetItem} onPress={handleResetScene} disabled={sending}>
               <Text style={styles.sheetItemActionTitle}>Start fresh scene</Text>
               <Text style={styles.sheetItemSubText}>Create a brand new variation and reset the conversation.</Text>
@@ -525,10 +577,15 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
       {/* Bottom Composer Area */}
       <View style={styles.bottomArea}>
+        {textValue.trim() ? (
+          <Pressable style={styles.playHintButton} onPress={() => speakPhrase(textValue)}>
+            <Text style={styles.playHintButtonText}>Play hint aloud</Text>
+          </Pressable>
+        ) : null}
         {inputMode === "text" ? (
           <View style={styles.textComposerWrap}>
             <Pressable style={styles.micSwitchButton} onPress={() => setInputMode("voice")}>
-              <Text style={styles.micSwitchButtonText}>🎤</Text>
+              <MicGlyph tone="inkMute" />
             </Pressable>
             
             <View style={styles.textComposer}>
@@ -562,7 +619,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               <View style={styles.orbButtonContainer}>
                 {recorderState.isRecording ? (
                   <View style={styles.lockIndicator}>
-                    <Text style={styles.lockIndicatorText}>🔒</Text>
+                    <LockGlyph />
                   </View>
                 ) : null}
                 <Pressable
@@ -745,7 +802,8 @@ function MessageBubble({
   speaking,
   showTranslation,
   onToggleTranslation,
-  onSeeMore
+  onSeeMore,
+  onReplay
 }: {
   turn: ScenarioTurn;
   index: number;
@@ -754,6 +812,7 @@ function MessageBubble({
   showTranslation: boolean;
   onToggleTranslation: () => void;
   onSeeMore: () => void;
+  onReplay: () => void;
 }) {
   const isLearner = turn.role === "learner";
   const text = turn.text;
@@ -788,7 +847,7 @@ function MessageBubble({
         {!isLearner ? (
           <View style={styles.messageActionsRow}>
             {/* Custom volume/replay pill icon */}
-            <Pressable style={styles.messageActionPill}>
+            <Pressable style={styles.messageActionPill} onPress={onReplay}>
               <View style={styles.speakerVectorMini}>
                 <View style={styles.speakerBoxMini} />
                 <View style={styles.speakerConeMini} />
@@ -832,6 +891,62 @@ function MessageBubble({
             <Text style={styles.issueBannerDesc}>tap to practice the soft tz</Text>
           </Pressable>
         ) : null}
+      </View>
+    </View>
+  );
+}
+
+function SpeakerGlyph({
+  tone,
+  compact = false
+}: {
+  tone: "bone" | "inkMute" | "terracotta";
+  compact?: boolean;
+}) {
+  const color = tone === "bone" ? colors.bone : tone === "terracotta" ? colors.terracotta : colors.inkMute;
+
+  return (
+    <View style={[styles.speakerGlyph, compact ? styles.speakerGlyphCompact : null]}>
+      <View style={[styles.speakerGlyphBox, { backgroundColor: color }]} />
+      <View style={[styles.speakerGlyphCone, { borderRightColor: color }]} />
+      <View style={[styles.speakerGlyphWaveShort, { backgroundColor: color }]} />
+      <View style={[styles.speakerGlyphWaveTall, { backgroundColor: color }]} />
+    </View>
+  );
+}
+
+function MicGlyph({ tone }: { tone: "bone" | "inkMute" }) {
+  const color = tone === "bone" ? colors.bone : colors.inkMute;
+
+  return (
+    <View style={styles.micGlyph}>
+      <View style={[styles.micGlyphCapsule, { backgroundColor: color }]} />
+      <View style={[styles.micGlyphCup, { borderColor: color }]} />
+      <View style={[styles.micGlyphStem, { backgroundColor: color }]} />
+      <View style={[styles.micGlyphBase, { backgroundColor: color }]} />
+    </View>
+  );
+}
+
+function LockGlyph() {
+  return (
+    <View style={styles.lockGlyph}>
+      <View style={styles.lockGlyphShackle} />
+      <View style={styles.lockGlyphBody} />
+    </View>
+  );
+}
+
+function SettingsGlyph() {
+  return (
+    <View style={styles.settingsGlyph}>
+      <View style={styles.settingsGlyphRow}>
+        <View style={styles.settingsGlyphLineWide} />
+        <View style={styles.settingsGlyphDot} />
+      </View>
+      <View style={styles.settingsGlyphRow}>
+        <View style={styles.settingsGlyphDot} />
+        <View style={styles.settingsGlyphLineNarrow} />
       </View>
     </View>
   );
@@ -989,6 +1104,34 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "bold",
     top: -0.5
+  },
+  settingsGlyph: {
+    width: 16,
+    height: 14,
+    justifyContent: "space-between"
+  },
+  settingsGlyphRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  settingsGlyphLineWide: {
+    width: 10,
+    height: 1.5,
+    borderRadius: 1,
+    backgroundColor: colors.ink
+  },
+  settingsGlyphLineNarrow: {
+    width: 8,
+    height: 1.5,
+    borderRadius: 1,
+    backgroundColor: colors.ink
+  },
+  settingsGlyphDot: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: colors.ink
   },
   avatarWrap: {
     paddingHorizontal: 16,
@@ -1194,6 +1337,100 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(26,20,16,0.35)",
     alignItems: "center",
     justifyContent: "center"
+  },
+  speakerGlyph: {
+    flexDirection: "row",
+    alignItems: "center"
+  },
+  speakerGlyphCompact: {
+    transform: [{ scale: 0.9 }]
+  },
+  speakerGlyphBox: {
+    width: 4,
+    height: 6,
+    borderRadius: 1
+  },
+  speakerGlyphCone: {
+    width: 0,
+    height: 0,
+    borderTopWidth: 5,
+    borderTopColor: "transparent",
+    borderBottomWidth: 5,
+    borderBottomColor: "transparent",
+    borderRightWidth: 6,
+    marginLeft: -1
+  },
+  speakerGlyphWaveShort: {
+    width: 1.5,
+    height: 4,
+    borderRadius: 1,
+    marginLeft: 2
+  },
+  speakerGlyphWaveTall: {
+    width: 1.5,
+    height: 8,
+    borderRadius: 1,
+    marginLeft: 1.5,
+    opacity: 0.75
+  },
+  micGlyph: {
+    width: 18,
+    height: 18,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  micGlyphCapsule: {
+    position: "absolute",
+    top: 1,
+    width: 7,
+    height: 10,
+    borderRadius: 4
+  },
+  micGlyphCup: {
+    position: "absolute",
+    top: 5,
+    width: 12,
+    height: 8,
+    borderBottomLeftRadius: 6,
+    borderBottomRightRadius: 6,
+    borderWidth: 1.8,
+    borderTopWidth: 0
+  },
+  micGlyphStem: {
+    position: "absolute",
+    bottom: 2.5,
+    width: 1.8,
+    height: 4
+  },
+  micGlyphBase: {
+    position: "absolute",
+    bottom: 1.5,
+    width: 8,
+    height: 1.8,
+    borderRadius: 1
+  },
+  lockGlyph: {
+    width: 14,
+    height: 16,
+    alignItems: "center",
+    justifyContent: "flex-end"
+  },
+  lockGlyphShackle: {
+    position: "absolute",
+    top: 0,
+    width: 8,
+    height: 7,
+    borderWidth: 1.8,
+    borderBottomWidth: 0,
+    borderColor: colors.bone,
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 6
+  },
+  lockGlyphBody: {
+    width: 12,
+    height: 9,
+    borderRadius: 3,
+    backgroundColor: colors.bone
   },
   speakerVector: {
     flexDirection: "row",
@@ -1542,10 +1779,20 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
     marginTop: 4
   },
+  sheetItemListen: {
+    minWidth: 34,
+    minHeight: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(184,70,44,0.1)"
+  },
   sheetItemVolume: {
-    fontSize: 16,
-    color: colors.inkFaint,
-    marginLeft: 8
+    fontSize: 11,
+    color: colors.terracotta,
+    marginLeft: 0,
+    marginTop: 4,
+    fontWeight: "600"
   },
   hintFooterText: {
     fontSize: 12,
@@ -1553,6 +1800,23 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginTop: 14,
     textAlign: "center"
+  },
+  playHintButton: {
+    alignSelf: "center",
+    minHeight: 38,
+    paddingHorizontal: 16,
+    marginBottom: 10,
+    borderRadius: radii.pill,
+    backgroundColor: "rgba(184,70,44,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(184,70,44,0.18)",
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  playHintButtonText: {
+    color: colors.terracotta,
+    fontSize: 13,
+    fontWeight: "600"
   },
   sheetButton: {
     minHeight: 46,
@@ -1639,6 +1903,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
+  correctionBtnTerraInner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8
+  },
   correctionBtnTerraText: {
     color: colors.bone,
     fontSize: 15,
@@ -1660,6 +1929,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: radii.pill,
+    backgroundColor: "rgba(26,20,16,0.04)",
     alignItems: "center",
     justifyContent: "center"
   },
@@ -1815,3 +2085,4 @@ const styles = StyleSheet.create({
     marginTop: 2
   }
 });
+
