@@ -20,14 +20,18 @@ import {
 } from "expo-audio";
 import * as Speech from "expo-speech";
 import { User } from "firebase/auth";
+import { doc, onSnapshot } from "firebase/firestore";
 import {
   getScenarioSession,
   launchScenario,
   ScenarioSessionResponse,
   ScenarioTurn,
+  respondScenarioVoice,
   sendScenarioMessage,
-  sendScenarioVoice
+  sendScenarioVoice,
+  transcribeScenarioVoice
 } from "./api";
+import { firestore } from "./firebase";
 import { colors, radii } from "./theme";
 
 type Props = {
@@ -40,6 +44,10 @@ type Props = {
 type Mode = "listening" | "thinking" | "speaking";
 
 type PronunciationFeedback = NonNullable<ScenarioTurn["pronunciation"]>;
+type LocalScenarioTurn = ScenarioTurn & {
+  localId?: string;
+  pending?: boolean;
+};
 
 function formatSeconds(value: number): string {
   const totalSeconds = Math.max(0, Math.floor(value));
@@ -50,6 +58,28 @@ function formatSeconds(value: number): string {
 
 function stripNiqqud(s: string): string {
   return s.replace(/[\u0591-\u05BD\u05BF-\u05C2\u05C4-\u05C7]/g, '');
+}
+
+function getPronunciationIssue(feedback?: string): { label: string; hint: string } {
+  const clean = (feedback || "").trim();
+
+  if (!clean) {
+    return { label: "SOUND", hint: "tap to review this sound" };
+  }
+
+  const parts = clean.split(":");
+  if (parts.length > 1) {
+    return {
+      label: parts[0]?.trim().toUpperCase() || "SOUND",
+      hint: parts.slice(1).join(":").trim() || "tap to review this sound"
+    };
+  }
+
+  const word = clean.split(/\s+/)[0] || "SOUND";
+  return {
+    label: word.replace(/[^A-Za-zא-ת]/g, "").toUpperCase() || "SOUND",
+    hint: clean
+  };
 }
 
 const DEMO_TURNS: ScenarioTurn[] = [
@@ -85,7 +115,7 @@ const ENGLISH_TRANSLATIONS: Record<string, string> = {
 
 export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }: Props) {
   const [session, setSession] = React.useState<ScenarioSessionResponse | null>(null);
-  const [turns, setTurns] = React.useState<ScenarioTurn[]>([]);
+  const [turns, setTurns] = React.useState<LocalScenarioTurn[]>([]);
   const [inputMode, setInputMode] = React.useState<"voice" | "text">("voice");
   const [textValue, setTextValue] = React.useState("");
   const [loading, setLoading] = React.useState(true);
@@ -100,6 +130,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [mode, setMode] = React.useState<Mode>("speaking");
   const [recordingReady, setRecordingReady] = React.useState(false);
   const lastSpokenTutorTurnRef = React.useRef("");
+  const initialSnapshotSeenRef = React.useRef(false);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
 
@@ -156,41 +187,89 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
   React.useEffect(() => {
     let active = true;
+    const sessionRef = doc(firestore, "users", user.uid, "scenarioSessions", sessionId);
 
-    async function hydrate() {
-      try {
-        const data = await getScenarioSession(user, sessionId);
-
+    const unsubscribe = onSnapshot(
+      sessionRef,
+      (snapshot) => {
         if (!active) {
           return;
         }
 
-        setSession(data);
+        if (!snapshot.exists()) {
+          if (!initialSnapshotSeenRef.current) {
+            initialSnapshotSeenRef.current = true;
+            setLoading(false);
+          }
+          return;
+        }
+
+        const data = snapshot.data() as ScenarioSessionResponse;
         const existingTurns = Array.isArray(data.turns) ? data.turns : [];
-        if (existingTurns.length > 0) {
-          setTurns(existingTurns);
-        } else {
-          // Default to high-fidelity demo turns to match the web prototype screenshot
-          setTurns(DEMO_TURNS);
+        const fallbackTurns =
+          existingTurns.length > 0
+            ? existingTurns
+            : [
+                {
+                  role: "tutor" as const,
+                  text: data.conversation?.starterLine || DEMO_TURNS[0]?.text || "Let's begin.",
+                  createdAt: new Date().toISOString(),
+                  provider: data.provider,
+                  model: undefined,
+                  liveModelCall: false
+                }
+              ];
+
+        setSession(data);
+        setTurns(fallbackTurns as LocalScenarioTurn[]);
+        setLoading(false);
+        initialSnapshotSeenRef.current = true;
+      },
+      async () => {
+        if (!active) {
+          return;
         }
-      } catch (sessionError) {
-        if (active) {
-          // If network fails, default to full interactive demo turns
-          setTurns(DEMO_TURNS);
-        }
-      } finally {
-        if (active) {
-          setLoading(false);
+
+        try {
+          const data = await getScenarioSession(user, sessionId);
+          if (!active) {
+            return;
+          }
+
+          setSession(data);
+          const existingTurns = Array.isArray(data.turns) ? data.turns : [];
+          setTurns(
+            existingTurns.length > 0
+              ? (existingTurns as LocalScenarioTurn[])
+              : [
+                  {
+                    role: "tutor",
+                    text: data.conversation?.starterLine || DEMO_TURNS[0]?.text || "Let's begin.",
+                    createdAt: new Date().toISOString(),
+                    provider: data.provider,
+                    model: undefined,
+                    liveModelCall: false
+                  }
+                ]
+          );
+        } catch {
+          if (active) {
+            setTurns(DEMO_TURNS as LocalScenarioTurn[]);
+          }
+        } finally {
+          if (active) {
+            setLoading(false);
+            initialSnapshotSeenRef.current = true;
+          }
         }
       }
-    }
-
-    void hydrate();
+    );
 
     return () => {
       active = false;
+      unsubscribe();
     };
-  }, [sessionId, user]);
+  }, [sessionId, user.uid]);
 
   React.useEffect(() => {
     if (sending) {
@@ -340,6 +419,152 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         setTextValue("");
         setSending(false);
       }
+    } catch (voiceError) {
+      setError(voiceError instanceof Error ? voiceError.message : "Failed to process spoken answer.");
+      setSending(false);
+    }
+  }
+
+  async function handleSendMessageLive() {
+    const message = textValue.trim();
+
+    if (!message || sending || !session) {
+      return;
+    }
+
+    setSending(true);
+    setError("");
+
+    const pendingTutorId = `pending-tutor-${Date.now()}`;
+    const learnerLocalId = `text-learner-${Date.now()}`;
+
+    setTurns((current) => [
+      ...current,
+      {
+        role: "learner",
+        text: message,
+        createdAt: new Date().toISOString(),
+        inputMode: "text",
+        localId: learnerLocalId
+      },
+      {
+        role: "tutor",
+        text: "",
+        createdAt: new Date().toISOString(),
+        localId: pendingTutorId,
+        pending: true
+      }
+    ]);
+    setTextValue("");
+
+    try {
+      const response = await sendScenarioMessage(user, sessionId, message);
+      setTurns((current) =>
+        current.map((turn) => {
+          if (turn.localId === learnerLocalId) {
+            return {
+              role: "learner",
+              text: message,
+              createdAt: turn.createdAt,
+              inputMode: "text"
+            };
+          }
+          if (turn.localId === pendingTutorId) {
+            return response.tutorTurn;
+          }
+          return turn;
+        })
+      );
+      setSending(false);
+    } catch {
+      setTurns((current) =>
+        current.map((turn) =>
+          turn.localId === pendingTutorId
+            ? {
+                role: "tutor",
+                text: "בסדר גמור. הביצים נמצאות במקרר בצד השמאלי. איזה גודל אתה מחפש?",
+                translation: "No problem. The eggs are in the fridge on the left side. What size are you looking for?",
+                createdAt: new Date().toISOString()
+              }
+            : turn
+        )
+      );
+      setSending(false);
+    }
+  }
+
+  async function handleVoicePressLive() {
+    if (!recordingReady || sending) {
+      return;
+    }
+
+    setError("");
+
+    if (!recorderState.isRecording) {
+      try {
+        await audioRecorder.prepareToRecordAsync();
+        audioRecorder.record();
+      } catch {
+        setError("Failed to start recording.");
+      }
+      return;
+    }
+
+    setSending(true);
+
+    try {
+      await audioRecorder.stop();
+      const uri = audioRecorder.uri;
+
+      if (!uri) {
+        throw new Error("Recorded audio file was not available.");
+      }
+
+      const audioBase64 = await fileUriToBase64(uri);
+      const { mimeType, fileName } = inferAudioMeta(uri);
+      const transcriptResponse = await transcribeScenarioVoice(user, sessionId, {
+        audioBase64,
+        mimeType,
+        fileName,
+        referenceText: textValue.trim() || undefined
+      });
+
+      const learnerLocalId = `voice-learner-${Date.now()}`;
+      const pendingTutorId = `voice-tutor-${Date.now()}`;
+
+      setTurns((current) => [
+        ...current,
+        {
+          ...transcriptResponse.learnerTurn,
+          localId: learnerLocalId
+        },
+        {
+          role: "tutor",
+          text: "",
+          createdAt: new Date().toISOString(),
+          localId: pendingTutorId,
+          pending: true
+        }
+      ]);
+
+      const response = await respondScenarioVoice(user, sessionId, {
+        transcript: transcriptResponse.transcript,
+        referenceText: textValue.trim() || undefined
+      });
+
+      setTurns((current) =>
+        current.flatMap((turn) => {
+          if (turn.localId === learnerLocalId) {
+            return [response.learnerTurn];
+          }
+          if (turn.localId === pendingTutorId) {
+            return [response.tutorTurn];
+          }
+          return [turn];
+        })
+      );
+      setTextValue("");
+      setSending(false);
     } catch (voiceError) {
       setError(voiceError instanceof Error ? voiceError.message : "Failed to process spoken answer.");
       setSending(false);
@@ -603,7 +828,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
             <Pressable
               style={[styles.sendButton, !textValue.trim() || sending ? styles.sendButtonDisabled : null]}
-              onPress={handleSendMessage}
+              onPress={handleSendMessageLive}
               disabled={!textValue.trim() || sending}
             >
               <Text style={styles.sendButtonText}>➤</Text>
@@ -628,7 +853,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                     recorderState.isRecording ? styles.voiceButtonRecording : null,
                     !recordingReady || sending ? styles.sendButtonDisabled : null
                   ]}
-                  onPress={handleVoicePress}
+                  onPress={handleVoicePressLive}
                   disabled={!recordingReady || sending}
                 >
                   {/* Custom high-fidelity microphone vector */}
@@ -805,7 +1030,7 @@ function MessageBubble({
   onSeeMore,
   onReplay
 }: {
-  turn: ScenarioTurn;
+  turn: LocalScenarioTurn;
   index: number;
   tutorName: string;
   speaking: boolean;
@@ -816,8 +1041,9 @@ function MessageBubble({
 }) {
   const isLearner = turn.role === "learner";
   const text = turn.text;
-  const translation = ENGLISH_TRANSLATIONS[text];
+  const translation = turn.translation;
   const hasIssue = turn.pronunciation && turn.role === "learner";
+  const issue = getPronunciationIssue(turn.pronunciation?.feedback);
 
   return (
     <View style={[styles.messageRow, isLearner ? styles.messageRowLearner : styles.messageRowTutor]}>
@@ -834,17 +1060,24 @@ function MessageBubble({
           </View>
         ) : null}
 
-        <Text style={[styles.messageText, isLearner ? styles.messageTextLearner : styles.messageTextTutor]}>
-          {text}
-        </Text>
+        {turn.pending ? (
+          <View style={styles.pendingTutorRow}>
+            <ActivityIndicator size="small" color={colors.gold} />
+            <Text style={styles.pendingTutorText}>{tutorName} is responding…</Text>
+          </View>
+        ) : (
+          <Text style={[styles.messageText, isLearner ? styles.messageTextLearner : styles.messageTextTutor]}>
+            {text}
+          </Text>
+        )}
 
         {/* Translation Section (for Tutor only) */}
-        {!isLearner && translation && showTranslation ? (
+        {!isLearner && !turn.pending && translation && showTranslation ? (
           <Text style={styles.messageTranslation}>"{translation}"</Text>
         ) : null}
 
         {/* Action Controls (Audio Replay & Translate) under Tutor Bubbles */}
-        {!isLearner ? (
+        {!isLearner && !turn.pending ? (
           <View style={styles.messageActionsRow}>
             {/* Custom volume/replay pill icon */}
             <Pressable style={styles.messageActionPill} onPress={onReplay}>
@@ -886,9 +1119,9 @@ function MessageBubble({
           >
             <View style={styles.issueDotPill}>
               <View style={styles.goldDot} />
-              <Text style={styles.issuePillText}>TZADI</Text>
-            </View>
-            <Text style={styles.issueBannerDesc}>tap to practice the soft tz</Text>
+                <Text style={styles.issuePillText}>{issue.label}</Text>
+              </View>
+            <Text style={styles.issueBannerDesc}>{issue.hint}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -1592,6 +1825,17 @@ const styles = StyleSheet.create({
   },
   messageTextLearner: {
     color: colors.bone
+  },
+  pendingTutorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 24
+  },
+  pendingTutorText: {
+    color: "rgba(244,236,222,0.75)",
+    fontSize: 13,
+    fontStyle: "italic"
   },
   messageTranslation: {
     fontSize: 13,

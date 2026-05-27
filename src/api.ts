@@ -93,6 +93,7 @@ export type ScenarioLaunchResponse = {
 export type ScenarioTurn = {
   role: "learner" | "tutor";
   text: string;
+  translation?: string | null;
   createdAt: string;
   inputMode?: "voice" | "text";
   provider?: "gemini" | "openai";
@@ -136,6 +137,12 @@ export type ScenarioVoiceResponse = {
   };
   learnerTurn: ScenarioTurn;
   tutorTurn: ScenarioTurn;
+};
+
+export type ScenarioVoiceTranscriptResponse = {
+  sessionId: string;
+  transcript: string;
+  learnerTurn: ScenarioTurn;
 };
 
 const ACCESS_TOKEN_KEY = "daber_access_token";
@@ -344,6 +351,44 @@ export async function sendScenarioVoice(
 ): Promise<ScenarioVoiceResponse> {
   const token = await user.getIdToken();
   const response = await request<ScenarioVoiceResponse>(`/scenarios/sessions/${sessionId}/voice`, token, input);
+
+  if (!response.details) {
+    throw new Error("Scenario voice response was not returned by the backend.");
+  }
+
+  return response.details;
+}
+
+export async function transcribeScenarioVoice(
+  user: User,
+  sessionId: string,
+  input: {
+    audioBase64: string;
+    mimeType?: string;
+    fileName?: string;
+    referenceText?: string;
+  }
+): Promise<ScenarioVoiceTranscriptResponse> {
+  const token = await user.getIdToken();
+  const response = await request<ScenarioVoiceTranscriptResponse>(`/scenarios/sessions/${sessionId}/voice/transcribe`, token, input);
+
+  if (!response.details) {
+    throw new Error("Scenario voice transcript response was not returned by the backend.");
+  }
+
+  return response.details;
+}
+
+export async function respondScenarioVoice(
+  user: User,
+  sessionId: string,
+  input: {
+    transcript: string;
+    referenceText?: string;
+  }
+): Promise<ScenarioVoiceResponse> {
+  const token = await user.getIdToken();
+  const response = await request<ScenarioVoiceResponse>(`/scenarios/sessions/${sessionId}/voice/respond`, token, input);
 
   if (!response.details) {
     throw new Error("Scenario voice response was not returned by the backend.");

@@ -5,6 +5,8 @@ import { signOut, User } from "firebase/auth";
 import { auth } from "./firebase";
 import { colors, radii } from "./theme";
 import { getCurrentUser, launchScenario } from "./api";
+import { TranslateGameScreen } from "./TranslateGameScreen";
+import { GuidedGamesScreen } from "./GuidedGamesScreen";
 
 type Props = {
   user: User;
@@ -174,6 +176,7 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
   const [tab, setTab] = React.useState<TabKey>("home");
   const [detail, setDetail] = React.useState<DetailState | null>(null);
   const [selectedVoiceName, setSelectedVoiceName] = React.useState("Dana");
+  const [activeGame, setActiveGame] = React.useState<null | "translate" | "tf" | "echo" | "verbs" | "words">(null);
 
   const todayThemeId = React.useMemo(() => {
     const day = Math.floor(Date.now() / 86400000);
@@ -287,6 +290,11 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
   }
 
   function handleGameTap(game: (typeof GAMES)[number]) {
+    if (game.id === "translate" || game.id === "tf" || game.id === "echo" || game.id === "verbs" || game.id === "words") {
+      setActiveGame(game.id);
+      return;
+    }
+
     setDetail({
       kind: "game",
       eyebrow: "GUIDED GAME",
@@ -297,6 +305,14 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
   }
 
 
+
+  if (activeGame === "translate") {
+    return <TranslateGameScreen onExit={() => setActiveGame(null)} />;
+  }
+
+  if (activeGame === "tf" || activeGame === "echo" || activeGame === "verbs" || activeGame === "words") {
+    return <GuidedGamesScreen gameId={activeGame} onExit={() => setActiveGame(null)} />;
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>

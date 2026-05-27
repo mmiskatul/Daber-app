@@ -8,10 +8,11 @@ const GOOGLE_DEFAULTS = {
 };
 
 function getScriptHost(): string | null {
+  const legacyManifest = Constants.manifest as { debuggerHost?: string } | null | undefined;
   const expoHostUri =
     Constants.expoConfig?.hostUri ||
     Constants.manifest2?.extra?.expoClient?.hostUri ||
-    Constants.manifest?.debuggerHost;
+    legacyManifest?.debuggerHost;
 
   if (expoHostUri && typeof expoHostUri === "string") {
     return expoHostUri.split(":")[0] || null;
