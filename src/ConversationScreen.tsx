@@ -753,7 +753,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
       const voiceLearnerId = `voice-learner-${Date.now()}`;
       const pendingTutorId = `pending-tutor-${Date.now()}`;
-      const voicePreviewText = "Voice note";
+      const voicePreviewText = "Voice note sent";
 
       setTurns((current) => [
         ...current,
@@ -1465,6 +1465,13 @@ function MessageBubble({
           <View style={styles.pendingTutorRow}>
             <ActivityIndicator size="small" color={colors.gold} />
             <Text style={styles.pendingTutorText}>{tutorName} is responding in Hebrew…</Text>
+          </View>
+        ) : isLearner && turn.inputMode === "voice" ? (
+          <View style={styles.voiceNoteRow}>
+            <View style={styles.voiceNotePill}>
+              <Text style={styles.voiceNotePillText}>Voice</Text>
+            </View>
+            <Text style={styles.voiceNoteText}>Voice note sent</Text>
           </View>
         ) : (
           <Text style={[styles.messageText, isLearner ? styles.messageTextLearner : styles.messageTextTutor]}>
@@ -2238,6 +2245,29 @@ const styles = StyleSheet.create({
   },
   messageTextLearner: {
     color: colors.bone
+  },
+  voiceNoteRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    minHeight: 28
+  },
+  voiceNotePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.16)"
+  },
+  voiceNotePillText: {
+    color: colors.bone,
+    fontSize: 10,
+    letterSpacing: 1,
+    textTransform: "uppercase"
+  },
+  voiceNoteText: {
+    color: colors.bone,
+    fontSize: 14,
+    fontStyle: "italic"
   },
   pendingTutorRow: {
     flexDirection: "row",
