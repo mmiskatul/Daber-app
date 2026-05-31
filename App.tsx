@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "./src/firebase";
-import { getCurrentUser, getOnboarding, syncUser } from "./src/api";
+import { getCurrentUser, getOnboarding, syncUser, completeRoadmapStop, getRoadmap } from "./src/api";
 import { AuthScreen } from "./src/AuthScreen";
 import { ConversationScreen } from "./src/ConversationScreen";
 import { HomeScreen } from "./src/HomeScreen";
@@ -88,6 +88,15 @@ export default function App() {
             await AsyncStorage.setItem(getActiveConversationStorageKey(user.uid), nextSessionId);
           }}
           onExit={async () => {
+            try {
+              const stops = await getRoadmap(user);
+              const currentStop = stops.find((s) => s.kind === "current");
+              if (currentStop) {
+                await completeRoadmapStop(user, currentStop.id);
+              }
+            } catch (err) {
+              console.error("Failed to complete stop:", err);
+            }
             setActiveConversationSessionId("");
             await AsyncStorage.removeItem(getActiveConversationStorageKey(user.uid));
             setStage("home");

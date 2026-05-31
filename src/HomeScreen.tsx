@@ -4,7 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { signOut, User } from "firebase/auth";
 import { auth } from "./firebase";
 import { colors, radii } from "./theme";
-import { getCurrentUser, launchScenario } from "./api";
+import { getCurrentUser, launchScenario, getRoadmap, completeRoadmapStop } from "./api";
 import { TranslateGameScreen } from "./TranslateGameScreen";
 import { GuidedGamesScreen } from "./GuidedGamesScreen";
 
@@ -67,11 +67,11 @@ type DetailState =
 const PATH_OFFSETS = [0, 30, 50, 20];
 
 const ROADMAP_STOPS: RoadmapStop[] = [
-  { id: "s1", kind: "done", title: "Falafel Stand", he: "דּוּכַן פָּלָאפֶל", fmt: "Roleplay" },
-  { id: "s2", kind: "done", title: "Greeting a Neighbor", he: "שָׁכֵן", fmt: "Roleplay" },
-  { id: "s3", kind: "done", title: "Numbers, 1–20", he: "מִסְפָּרִים", fmt: "Drill" },
+  { id: "s1", kind: "current", title: "Falafel Stand", he: "דּוּכַן פָּלָאפֶל", fmt: "Roleplay" },
+  { id: "s2", kind: "locked", title: "Greeting a Neighbor", he: "שָׁכֵן", fmt: "Roleplay" },
+  { id: "s3", kind: "locked", title: "Numbers, 1–20", he: "מִסְפָּרִים", fmt: "Drill" },
   { id: "cp1", kind: "checkpoint", title: "Checkpoint", he: "מִבְחָן", fmt: "Pick a format" },
-  { id: "s4", kind: "current", title: "At the Supermarket", he: "בַּסּוּפֶּר", fmt: "Roleplay" },
+  { id: "s4", kind: "locked", title: "At the Supermarket", he: "בַּסּוּפֶּר", fmt: "Roleplay" },
   { id: "s5", kind: "locked", title: "Asking for Help", he: "מְבַקֵּשׁ עֶזְרָה", fmt: "Roleplay" },
   { id: "s6", kind: "locked", title: "Café Order", he: "בְּבֵית קָפֶה", fmt: "Roleplay" },
   { id: "tl1", kind: "locked", title: "Past Tense, men.", he: "עָבָר", fmt: "Tutor" },
@@ -172,12 +172,78 @@ const GAMES = [
   { id: "words", color: "#7BABC0", he: "מִלָּה", titleA: "Catch", titleB: "the word", sub: "Fill in the missing word in the sentence." }
 ];
 
+const HERO_DETAILS: Record<string, { title: string; he: string; watermark: string; copy: string }> = {
+  s1: {
+    title: "Falafel Stand",
+    he: "דּוּכַן פָּלָאפֶל",
+    watermark: "פ",
+    copy: "Order a hot falafel. Ask for tahini. Pay with coins. 4 micro-steps."
+  },
+  s2: {
+    title: "Greeting a Neighbor",
+    he: "שָׁכֵן",
+    watermark: "ש",
+    copy: "Say hello. Introduce yourself. Ask how they are. 4 micro-steps."
+  },
+  s3: {
+    title: "Numbers, 1–20",
+    he: "מִסְפָּרִים",
+    watermark: "מ",
+    copy: "Count the items. Practice pronunciation under pressure. 4 micro-steps."
+  },
+  s4: {
+    title: "At the supermarket",
+    he: "בַּסּוּפֶּר",
+    watermark: "ס",
+    copy: "Find the eggs. Ask the price. Pay with cash. 5 micro-steps."
+  },
+  s5: {
+    title: "Asking for Help",
+    he: "מְבַקֵּשׁ עֶזְרָה",
+    watermark: "ע",
+    copy: "Get directions. Ask where to find the bus stop. 4 micro-steps."
+  },
+  s6: {
+    title: "Café Order",
+    he: "בְּבֵית קָפֶה",
+    watermark: "ק",
+    copy: "Order a cappuccino. Choose oat milk. Pick a pastry. 4 micro-steps."
+  },
+  tl1: {
+    title: "Past Tense, men.",
+    he: "עָבָר",
+    watermark: "ע",
+    copy: "Learn standard male conjugations in past tense with a tutor."
+  }
+};
+
 export function HomeScreen({ user, onOpenConversation }: Props) {
   const [tab, setTab] = React.useState<TabKey>("home");
   const [detail, setDetail] = React.useState<DetailState | null>(null);
   const [selectedVoiceName, setSelectedVoiceName] = React.useState("Dana");
   const [activeGame, setActiveGame] = React.useState<null | "translate" | "tf" | "echo" | "verbs" | "words">(null);
+  const [roadmapStops, setRoadmapStops] = React.useState<RoadmapStop[]>(ROADMAP_STOPS);
 
+  React.useEffect(() => {
+    let active = true;
+
+    async function loadRoadmap() {
+      try {
+        const stops = await getRoadmap(user);
+        if (active) {
+          setRoadmapStops(stops);
+        }
+      } catch (err) {
+        console.error("Failed to load roadmap:", err);
+      }
+    }
+
+    void loadRoadmap();
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
   const todayThemeId = React.useMemo(() => {
     const day = Math.floor(Date.now() / 86400000);
     const ids = THEMES.filter((theme) => !theme.locked).map((theme) => theme.id);
@@ -314,6 +380,9 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     return <GuidedGamesScreen gameId={activeGame} onExit={() => setActiveGame(null)} />;
   }
 
+  const currentStop = roadmapStops.find((s) => s.kind === "current") || roadmapStops[0];
+  const heroDetail = HERO_DETAILS[currentStop.id] || HERO_DETAILS.s1;
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.topBar}>
@@ -332,14 +401,14 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={styles.heroWrap}>
               <View style={styles.heroCard}>
-                <Text style={styles.heroWatermark}>ס</Text>
+                <Text style={styles.heroWatermark}>{heroDetail.watermark}</Text>
                 <Text style={styles.heroEyebrow}>NEXT · 4 MIN</Text>
-                <Text style={styles.heroHebrew}>בַּסּוּפֶּר</Text>
-                <Text style={styles.heroTitle}>At the supermarket</Text>
+                <Text style={styles.heroHebrew}>{heroDetail.he}</Text>
+                <Text style={styles.heroTitle}>{heroDetail.title}</Text>
                 <Text style={styles.heroCopy}>
-                  Find the eggs. Ask the price. Pay with cash. 5 micro-steps with {selectedVoiceName}.
+                  {heroDetail.copy.replace("micro-steps.", `micro-steps with ${selectedVoiceName}.`)}
                 </Text>
-                <Pressable style={styles.heroButton} onPress={() => handleRoadmapTap(ROADMAP_STOPS[4])}>
+                <Pressable style={styles.heroButton} onPress={() => handleRoadmapTap(currentStop)}>
                   <Text style={styles.heroButtonText}>Resume</Text>
                   <Text style={styles.heroButtonText}>→</Text>
                 </Pressable>
@@ -358,12 +427,12 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
             </View>
 
             <View style={styles.pathWrap}>
-              {ROADMAP_STOPS.map((stop, index) => (
+              {roadmapStops.map((stop, index) => (
                 <PathStop
                   key={stop.id}
                   stop={stop}
                   index={index}
-                  last={index === ROADMAP_STOPS.length - 1}
+                  last={index === roadmapStops.length - 1}
                   onPress={() => handleRoadmapTap(stop)}
                 />
               ))}
@@ -474,6 +543,15 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
         <DetailOverlay
           detail={detail}
           onClose={() => setDetail(null)}
+          onAction={async () => {
+            setDetail(null);
+            if (detail.action === "Resume" || detail.action === "Continue") {
+              const supermarketTheme = THEMES.find((theme) => theme.id === "supermarket");
+              if (supermarketTheme) {
+                await handleThemeTap(supermarketTheme);
+              }
+            }
+          }}
         />
       ) : null}
     </SafeAreaView>
@@ -491,6 +569,241 @@ function StatBadge({ tone, symbol, value }: { tone: "terracotta" | "gold"; symbo
   );
 }
 
+function WavyConnector({
+  x1,
+  x2,
+  y2,
+  isCompleted,
+  isTransition
+}: {
+  x1: number;
+  x2: number;
+  y2: number;
+  isCompleted: boolean;
+  isTransition: boolean;
+}) {
+  if (isCompleted) {
+    // Solid green S-curve using 2 curved views
+    const dx = x2 - x1;
+    const xMid = (x1 + x2) / 2;
+    const yMid = y2 / 2;
+
+    if (Math.abs(dx) < 1) {
+      return (
+        <View
+          style={{
+            position: "absolute",
+            left: x1 - 2.5,
+            top: 0,
+            width: 5,
+            height: y2,
+            backgroundColor: colors.olive,
+            borderRadius: 2.5
+          }}
+        />
+      );
+    }
+
+    if (dx > 0) {
+      // Curving right
+      const w = dx / 2;
+      return (
+        <>
+          {/* Top Half Bend */}
+          <View
+            style={{
+              position: "absolute",
+              left: x1,
+              top: 0,
+              width: w + 5,
+              height: yMid,
+              borderLeftWidth: 5,
+              borderBottomWidth: 5,
+              borderColor: colors.olive,
+              borderBottomLeftRadius: yMid,
+              backgroundColor: "transparent"
+            }}
+          />
+          {/* Bottom Half Bend */}
+          <View
+            style={{
+              position: "absolute",
+              left: xMid - 5,
+              top: yMid - 5,
+              width: w + 10,
+              height: yMid + 5,
+              borderRightWidth: 5,
+              borderTopWidth: 5,
+              borderColor: colors.olive,
+              borderTopRightRadius: yMid,
+              backgroundColor: "transparent"
+            }}
+          />
+        </>
+      );
+    } else {
+      // Curving left
+      const w = Math.abs(dx) / 2;
+      return (
+        <>
+          {/* Top Half Bend */}
+          <View
+            style={{
+              position: "absolute",
+              left: xMid,
+              top: 0,
+              width: w + 5,
+              height: yMid,
+              borderRightWidth: 5,
+              borderBottomWidth: 5,
+              borderColor: colors.olive,
+              borderBottomRightRadius: yMid,
+              backgroundColor: "transparent"
+            }}
+          />
+          {/* Bottom Half Bend */}
+          <View
+            style={{
+              position: "absolute",
+              left: x2,
+              top: yMid - 5,
+              width: w + 5,
+              height: yMid + 5,
+              borderLeftWidth: 5,
+              borderTopWidth: 5,
+              borderColor: colors.olive,
+              borderTopLeftRadius: yMid,
+              backgroundColor: "transparent"
+            }}
+          />
+        </>
+      );
+    }
+  }
+
+  if (isTransition) {
+    // Transition connector: Top half is solid terracotta red, bottom half is grey dots
+    const dx = x2 - x1;
+    const xMid = (x1 + x2) / 2;
+    const yMid = y2 / 2;
+
+    // Render top half solid red
+    let topHalfSolid = null;
+    if (Math.abs(dx) < 1) {
+      topHalfSolid = (
+        <View
+          style={{
+            position: "absolute",
+            left: x1 - 2.5,
+            top: 0,
+            width: 5,
+            height: yMid,
+            backgroundColor: colors.terracotta,
+            borderRadius: 2.5
+          }}
+        />
+      );
+    } else if (dx > 0) {
+      const w = dx / 2;
+      topHalfSolid = (
+        <View
+          style={{
+            position: "absolute",
+            left: x1,
+            top: 0,
+            width: w + 5,
+            height: yMid,
+            borderLeftWidth: 5,
+            borderBottomWidth: 5,
+            borderColor: colors.terracotta,
+            borderBottomLeftRadius: yMid,
+            backgroundColor: "transparent"
+          }}
+        />
+      );
+    } else {
+      const w = Math.abs(dx) / 2;
+      topHalfSolid = (
+        <View
+          style={{
+            position: "absolute",
+            left: xMid,
+            top: 0,
+            width: w + 5,
+            height: yMid,
+            borderRightWidth: 5,
+            borderBottomWidth: 5,
+            borderColor: colors.terracotta,
+            borderBottomRightRadius: yMid,
+            backgroundColor: "transparent"
+          }}
+        />
+      );
+    }
+
+    // Render bottom half as grey dots along the second half of the bezier curve (t = 0.5 to 1.0)
+    const dots = [];
+    const numDots = 6;
+    for (let i = 0; i <= numDots; i++) {
+      const t = 0.5 + (i / numDots) * 0.5;
+      const angle = t * Math.PI;
+      const factor = (1 - Math.cos(angle)) / 2;
+      const xPos = x1 + (x2 - x1) * factor;
+      const yPos = t * y2;
+
+      dots.push(
+        <View
+          key={`dot-${i}`}
+          style={{
+            position: "absolute",
+            left: xPos - 3,
+            top: yPos - 3,
+            width: 6,
+            height: 6,
+            borderRadius: 3,
+            backgroundColor: "rgba(26, 20, 16, 0.24)"
+          }}
+        />
+      );
+    }
+
+    return (
+      <>
+        {topHalfSolid}
+        {dots}
+      </>
+    );
+  }
+
+  // Locked stop connector: entirely grey dots along the curve (t = 0 to 1.0)
+  const dots = [];
+  const numDots = 12;
+  for (let i = 0; i <= numDots; i++) {
+    const t = i / numDots;
+    const angle = t * Math.PI;
+    const factor = (1 - Math.cos(angle)) / 2;
+    const xPos = x1 + (x2 - x1) * factor;
+    const yPos = t * y2;
+
+    dots.push(
+      <View
+        key={`dot-locked-${i}`}
+        style={{
+          position: "absolute",
+          left: xPos - 3,
+          top: yPos - 3,
+          width: 6,
+          height: 6,
+          borderRadius: 3,
+          backgroundColor: "rgba(26, 20, 16, 0.16)"
+        }}
+      />
+    );
+  }
+
+  return <>{dots}</>;
+}
+
 function PathStop({
   stop,
   index,
@@ -504,59 +817,80 @@ function PathStop({
 }) {
   const offset = PATH_OFFSETS[index % PATH_OFFSETS.length];
   const nextOffset = PATH_OFFSETS[(index + 1) % PATH_OFFSETS.length];
-  const connectorMargin = nextOffset - offset;
+
+  const x1 = offset + 32;
+  const x2 = nextOffset + 32;
+  const y2 = 94; // Row height (88) + marginBottom (6)
+
+  // Determine line style
+  // - Completed: all lines up to the transition between current and locked (which is at index 4 to 5)
+  // - Transition (index === 4): from current (At the Supermarket) to locked (Asking for Help). Half solid terracotta red, half grey dashed.
+  // - Locked: index > 4. Entirely grey dashed.
+  const isTransition = index === 4;
+  const isCompleted = index < 4;
 
   return (
     <View style={styles.pathStopShell}>
-      {!last ? (
-        <View style={[styles.connectorWrap, { marginLeft: offset + 30 }]}>
-          <View
-            style={[
-              styles.connectorVertical,
-              stop.kind === "done" ? styles.connectorDone : stop.kind === "current" ? styles.connectorCurrent : styles.connectorLocked
-            ]}
-          />
-          <View
-            style={[
-              styles.connectorBend,
-              { marginLeft: connectorMargin },
-              stop.kind === "done" ? styles.connectorDone : stop.kind === "current" ? styles.connectorCurrent : styles.connectorLocked
-            ]}
+      {!last && (
+        <View style={styles.connectorSvgWrap}>
+          <WavyConnector
+            x1={x1}
+            x2={x2}
+            y2={y2}
+            isCompleted={isCompleted}
+            isTransition={isTransition}
           />
         </View>
-      ) : null}
+      )}
 
       {stop.kind === "checkpoint" ? (
         <Pressable style={[styles.pathRow, { paddingLeft: offset }]} onPress={onPress}>
-          <View style={styles.checkpointMarker}>
-            <Text style={styles.checkpointMarkerInner}>✦</Text>
+          <View style={styles.markerContainer}>
+            <View style={styles.checkpointMarker}>
+              <Text style={styles.checkpointMarkerInner}>✦</Text>
+            </View>
           </View>
           <View style={styles.pathText}>
             <Text style={[styles.pathLabel, styles.pathLabelMilestone]}>MILESTONE</Text>
-            <Text style={styles.pathTitle}>{stop.title} — {stop.fmt}</Text>
-            <Text style={styles.pathHebrew}>{stop.he}</Text>
+            <View style={styles.pathTitleRow}>
+              <Text style={styles.pathTitle}>
+                {stop.title} — {stop.fmt}
+              </Text>
+              <Text style={styles.pathHebrew}>{stop.he}</Text>
+            </View>
           </View>
         </Pressable>
       ) : (
         <Pressable style={[styles.pathRow, { paddingLeft: offset }]} onPress={onPress}>
-          <View
-            style={[
-              styles.pathMarker,
-              stop.kind === "done" ? styles.pathMarkerDone : null,
-              stop.kind === "current" ? styles.pathMarkerCurrent : null,
-              stop.kind === "locked" ? styles.pathMarkerLocked : null
-            ]}
-          >
-            <Text style={[styles.pathMarkerText, stop.kind === "locked" ? styles.pathMarkerTextLocked : null]}>
-              {stop.kind === "done" ? "✓" : stop.kind === "current" ? "▶" : "⌂"}
-            </Text>
+          <View style={styles.markerContainer}>
+            {stop.kind === "current" && (
+              <View style={styles.activeGlowHalo} />
+            )}
+            <View
+              style={[
+                styles.pathMarker,
+                stop.kind === "done" ? styles.pathMarkerDone : null,
+                stop.kind === "current" ? styles.pathMarkerCurrent : null,
+                stop.kind === "locked" ? styles.pathMarkerLocked : null
+              ]}
+            >
+              <Text style={[styles.pathMarkerText, stop.kind === "locked" ? styles.pathMarkerTextLocked : null]}>
+                {stop.kind === "done" ? "✓" : stop.kind === "current" ? "▶" : "🔒"}
+              </Text>
+            </View>
           </View>
           <View style={[styles.pathText, stop.kind === "locked" ? styles.pathTextLocked : null]}>
             <Text style={[styles.pathLabel, stop.kind === "current" ? styles.pathLabelCurrent : null]}>
-              {stop.fmt}{stop.kind === "current" ? " · NEXT" : ""}
+              {stop.fmt.toUpperCase()}{stop.kind === "current" ? " · NEXT" : ""}
             </Text>
-            <Text style={styles.pathTitle}>{stop.title}</Text>
-            <Text style={styles.pathHebrew}>{stop.he}</Text>
+            <View style={styles.pathTitleRow}>
+              <Text style={[styles.pathTitle, stop.kind === "locked" ? styles.pathTitleLocked : null]}>
+                {stop.title}
+              </Text>
+              <Text style={[styles.pathHebrew, stop.kind === "locked" ? styles.pathHebrewLocked : null]}>
+                {stop.he}
+              </Text>
+            </View>
           </View>
         </Pressable>
       )}
@@ -585,10 +919,12 @@ function TabButton({
 
 function DetailOverlay({
   detail,
-  onClose
+  onClose,
+  onAction
 }: {
   detail: DetailState;
   onClose: () => void;
+  onAction?: () => void;
 }) {
   return (
     <View style={styles.detailOverlay}>
@@ -597,7 +933,7 @@ function DetailOverlay({
         <Text style={styles.detailEyebrow}>{detail.eyebrow}</Text>
         <Text style={styles.detailTitle}>{detail.title}</Text>
         <Text style={styles.detailBody}>{detail.body}</Text>
-        <Pressable style={styles.detailButton} onPress={onClose}>
+        <Pressable style={styles.detailButton} onPress={onAction || onClose}>
           <Text style={styles.detailButtonText}>{detail.action}</Text>
         </Pressable>
       </View>
@@ -785,41 +1121,47 @@ const styles = StyleSheet.create({
     minHeight: 88,
     marginBottom: 6
   },
-  connectorWrap: {
+  connectorSvgWrap: {
     position: "absolute",
-    top: 64,
-    width: 90,
-    height: 42
-  },
-  connectorVertical: {
-    position: "absolute",
+    top: 32,
     left: 0,
-    top: 0,
-    width: 2,
-    height: 18,
-    borderRadius: radii.pill
+    right: 0,
+    height: 94,
+    zIndex: -1
   },
-  connectorBend: {
+  connectorSvg: {
+    width: "100%",
+    height: 94
+  },
+  markerContainer: {
+    position: "relative",
+    width: 64,
+    height: 64,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  activeGlowHalo: {
     position: "absolute",
-    left: 0,
-    top: 18,
-    width: 34,
-    height: 18,
-    borderBottomWidth: 2,
-    borderLeftWidth: 2,
-    borderBottomLeftRadius: 18
+    left: -12,
+    top: -12,
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    backgroundColor: "rgba(184, 70, 44, 0.20)"
   },
-  connectorDone: {
-    backgroundColor: colors.olive,
-    borderColor: colors.olive
+  pathTitleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 2
   },
-  connectorCurrent: {
-    backgroundColor: colors.terracotta,
-    borderColor: colors.terracotta
+  pathTitleLocked: {
+    color: colors.inkMute,
+    opacity: 0.6
   },
-  connectorLocked: {
-    backgroundColor: "rgba(26,20,16,0.16)",
-    borderColor: "rgba(26,20,16,0.16)"
+  pathHebrewLocked: {
+    color: colors.inkFaint,
+    opacity: 0.6
   },
   pathRow: {
     flexDirection: "row",
@@ -902,7 +1244,7 @@ const styles = StyleSheet.create({
   pathHebrew: {
     color: colors.inkMute,
     fontSize: 18,
-    marginTop: 2
+    textAlign: "right"
   },
   profileNote: {
     marginHorizontal: 24,

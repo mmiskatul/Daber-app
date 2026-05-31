@@ -45,6 +45,14 @@ export type UserProfile = {
   isNewUser?: boolean;
 };
 
+export type RoadmapStop = {
+  id: string;
+  kind: "done" | "checkpoint" | "current" | "locked";
+  title: string;
+  he: string;
+  fmt: string;
+};
+
 export type ScenarioThemeSummary = {
   id: string;
   title: string;
@@ -485,4 +493,20 @@ export async function getOnboarding(user: User): Promise<OnboardingPayload | nul
 
     throw error;
   }
+}
+
+export async function getRoadmap(user: User): Promise<RoadmapStop[]> {
+  const token = await user.getIdToken();
+  const response = await request<{ stops: RoadmapStop[] }>("/scenarios/roadmap", token, undefined, "GET");
+
+  if (!response.details?.stops) {
+    throw new Error("Roadmap stops were not returned by the backend.");
+  }
+
+  return response.details.stops;
+}
+
+export async function completeRoadmapStop(user: User, stopId: string): Promise<void> {
+  const token = await user.getIdToken();
+  await request("/scenarios/roadmap/complete", token, { stopId });
 }
