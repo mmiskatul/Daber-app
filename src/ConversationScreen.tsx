@@ -49,6 +49,11 @@ type LocalScenarioTurn = ScenarioTurn & {
   pending?: boolean;
 };
 
+type SupportLanguageConfig = {
+  label: string;
+  speechLanguage: string;
+};
+
 function formatSeconds(value: number): string {
   const totalSeconds = Math.max(0, Math.floor(value));
   const minutes = Math.floor(totalSeconds / 60);
@@ -58,6 +63,28 @@ function formatSeconds(value: number): string {
 
 function stripNiqqud(s: string): string {
   return s.replace(/[\u0591-\u05BD\u05BF-\u05C2\u05C4-\u05C7]/g, '');
+}
+
+function containsHebrew(text: string): boolean {
+  return /[\u0590-\u05FF]/.test(text);
+}
+
+function getSupportLanguageConfig(nativeLanguage?: string | null): SupportLanguageConfig {
+  const value = (nativeLanguage || "").toLowerCase();
+
+  if (value.includes("espa")) {
+    return { label: "Spanish", speechLanguage: "es-ES" };
+  }
+
+  if (value.includes("fran")) {
+    return { label: "French", speechLanguage: "fr-FR" };
+  }
+
+  if (value.includes("рус") || value.includes("ñƒñ")) {
+    return { label: "Russian", speechLanguage: "ru-RU" };
+  }
+
+  return { label: "English", speechLanguage: "en-US" };
 }
 
 function getPronunciationIssue(feedback?: string): { label: string; hint: string } {
@@ -133,6 +160,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const initialSnapshotSeenRef = React.useRef(false);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
+  const supportLanguage = getSupportLanguageConfig(session?.learnerProfile?.native);
 
   const speakPhrase = React.useCallback((text: string) => {
     const clean = stripNiqqud(text).trim();
@@ -148,6 +176,34 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       rate: 0.92
     });
   }, []);
+
+  const speakTutorTurn = React.useCallback(
+    (turn: Pick<ScenarioTurn, "text" | "translation">) => {
+      const cleanReply = stripNiqqud(turn.text).trim();
+      const cleanTranslation = (turn.translation || "").trim();
+
+      if (!cleanReply) {
+        return;
+      }
+
+      Speech.stop();
+      Speech.speak(cleanReply, {
+        language: "he-IL",
+        pitch: 1.0,
+        rate: 0.92,
+        onDone: cleanTranslation
+          ? () => {
+              Speech.speak(cleanTranslation, {
+                language: supportLanguage.speechLanguage,
+                pitch: 1.0,
+                rate: 0.95
+              });
+            }
+          : undefined
+      });
+    },
+    [supportLanguage.speechLanguage]
+  );
 
   React.useEffect(() => {
     let active = true;
@@ -304,8 +360,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     }
 
     lastSpokenTutorTurnRef.current = turnKey;
-    speakPhrase(lastTurn.text);
-  }, [autoSpeakEnabled, speakPhrase, turns]);
+    speakTutorTurn(lastTurn);
+  }, [autoSpeakEnabled, speakTutorTurn, turns]);
 
   React.useEffect(() => {
     return () => {
@@ -429,6 +485,11 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     const message = textValue.trim();
 
     if (!message || sending || !session) {
+      return;
+    }
+
+    if (!containsHebrew(message)) {
+      setError("Send your learner turn in Hebrew. Use the hint button if you need a phrase.");
       return;
     }
 
@@ -663,7 +724,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               showTranslation={!!showTranslations[index]}
               onToggleTranslation={() => toggleTranslation(index)}
               onSeeMore={() => setShowCorrectionSheet(true)}
-              onReplay={() => speakPhrase(turn.text)}
+              onReplay={() => (turn.role === "tutor" ? speakTutorTurn(turn) : speakPhrase(turn.text))}
             />
           ))}
           {error ? (
@@ -817,7 +878,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               <TextInput
                 value={textValue}
                 onChangeText={setTextValue}
-                placeholder="Reply in Hebrew or English…"
+                placeholder="Reply in Hebrew…"
                 placeholderTextColor={colors.inkFaint}
                 style={styles.input}
               />
@@ -1063,7 +1124,7 @@ function MessageBubble({
         {turn.pending ? (
           <View style={styles.pendingTutorRow}>
             <ActivityIndicator size="small" color={colors.gold} />
-            <Text style={styles.pendingTutorText}>{tutorName} is responding…</Text>
+            <Text style={styles.pendingTutorText}>{tutorName} is responding in Hebrew…</Text>
           </View>
         ) : (
           <Text style={[styles.messageText, isLearner ? styles.messageTextLearner : styles.messageTextTutor]}>
