@@ -29,6 +29,10 @@ export type OnboardingPayload = {
   voice: string;
 };
 
+export type SupportLanguagePayload = {
+  native: string;
+};
+
 export type UserProfile = {
   uid: string;
   email: string | null;
@@ -105,11 +109,21 @@ export type ScenarioTurn = {
     fluencyScore: number;
     feedback: string;
     scoringMode: "audio" | "transcript";
+    issues: Array<{
+      label: string;
+      issueCount: number;
+      severity: "low" | "medium" | "high";
+      affectedWord: string;
+      expectedSound: string;
+      heardApproximation: string;
+      hint: string;
+    }>;
   };
 };
 
 export type ScenarioSessionResponse = ScenarioLaunchResponse & {
   turns?: ScenarioTurn[];
+  supportTranslations?: Record<string, Record<string, { sourceText?: string; translation?: string } | string>>;
   updatedAt?: unknown;
 };
 
@@ -120,6 +134,15 @@ export type ScenarioMessageResponse = {
   model: string;
   learnerTurn: ScenarioTurn;
   tutorTurn: ScenarioTurn;
+};
+
+export type ScenarioSpeechResponse = {
+  audioBase64: string;
+  mimeType: string;
+  provider: "openai";
+  model: string;
+  voice: string;
+  liveModelCall: boolean;
 };
 
 export type ScenarioVoiceResponse = {
@@ -134,6 +157,15 @@ export type ScenarioVoiceResponse = {
     fluencyScore: number;
     feedback: string;
     scoringMode: "audio" | "transcript";
+    issues: Array<{
+      label: string;
+      issueCount: number;
+      severity: "low" | "medium" | "high";
+      affectedWord: string;
+      expectedSound: string;
+      heardApproximation: string;
+      hint: string;
+    }>;
   };
   learnerTurn: ScenarioTurn;
   tutorTurn: ScenarioTurn;
@@ -143,6 +175,13 @@ export type ScenarioVoiceTranscriptResponse = {
   sessionId: string;
   transcript: string;
   learnerTurn: ScenarioTurn;
+};
+
+export type ScenarioTranslationResponse = {
+  translation: string;
+  provider: "gemini" | "openai";
+  model: string;
+  liveModelCall: boolean;
 };
 
 const ACCESS_TOKEN_KEY = "daber_access_token";
@@ -286,6 +325,11 @@ export async function saveOnboarding(user: User, data: OnboardingPayload): Promi
   await request("/onboarding", token, data);
 }
 
+export async function updateSupportLanguage(user: User, data: SupportLanguagePayload): Promise<void> {
+  const token = await user.getIdToken();
+  await request("/onboarding/language", token, data, "PATCH");
+}
+
 export async function getScenarioThemes(user: User): Promise<{ todayThemeId: string; items: ScenarioThemeSummary[] }> {
   const token = await user.getIdToken();
   const response = await request<{ todayThemeId: string; items: ScenarioThemeSummary[] }>("/scenarios/themes", token, undefined, "GET");
@@ -334,6 +378,37 @@ export async function sendScenarioMessage(
 
   if (!response.details) {
     throw new Error("Scenario message response was not returned by the backend.");
+  }
+
+  return response.details;
+}
+
+export async function translateScenarioTurn(
+  user: User,
+  sessionId: string,
+  text: string,
+  native: string
+): Promise<ScenarioTranslationResponse> {
+  const token = await user.getIdToken();
+  const response = await request<ScenarioTranslationResponse>(`/scenarios/sessions/${sessionId}/translate`, token, { text, native });
+
+  if (!response.details) {
+    throw new Error("Scenario translation response was not returned by the backend.");
+  }
+
+  return response.details;
+}
+
+export async function synthesizeScenarioTutorSpeech(
+  user: User,
+  sessionId: string,
+  text: string
+): Promise<ScenarioSpeechResponse> {
+  const token = await user.getIdToken();
+  const response = await request<ScenarioSpeechResponse>(`/scenarios/sessions/${sessionId}/speech`, token, { text });
+
+  if (!response.details) {
+    throw new Error("Scenario speech response was not returned by the backend.");
   }
 
   return response.details;

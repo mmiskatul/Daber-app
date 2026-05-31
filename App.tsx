@@ -1,4 +1,5 @@
 import React from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
@@ -12,6 +13,10 @@ import { OnboardingScreen } from "./src/OnboardingScreen";
 import { colors, radii } from "./src/theme";
 
 type AppStage = "loading" | "auth" | "onboarding" | "home" | "conversation";
+
+function getActiveConversationStorageKey(uid: string) {
+  return `daber_active_conversation:${uid}`;
+}
 
 export default function App() {
   const [stage, setStage] = React.useState<AppStage>("loading");
@@ -29,11 +34,20 @@ export default function App() {
         return;
       }
 
+      setStage("loading");
+
       try {
         await syncUser(nextUser);
         const profile = await getCurrentUser(nextUser);
+        const storedConversationSessionId = await AsyncStorage.getItem(getActiveConversationStorageKey(nextUser.uid));
 
         if (profile.onboardingCompleted || profile.onboarding) {
+          if (storedConversationSessionId) {
+            setActiveConversationSessionId(storedConversationSessionId);
+            setStage("conversation");
+            return;
+          }
+
           setStage("home");
           return;
         }
@@ -69,19 +83,22 @@ export default function App() {
         <ConversationScreen
           user={user}
           sessionId={activeConversationSessionId}
-          onReplaceSession={(nextSessionId) => {
+          onReplaceSession={async (nextSessionId) => {
             setActiveConversationSessionId(nextSessionId);
+            await AsyncStorage.setItem(getActiveConversationStorageKey(user.uid), nextSessionId);
           }}
-          onExit={() => {
+          onExit={async () => {
             setActiveConversationSessionId("");
+            await AsyncStorage.removeItem(getActiveConversationStorageKey(user.uid));
             setStage("home");
           }}
         />
       ) : (
         <HomeScreen
           user={user}
-          onOpenConversation={(sessionId) => {
+          onOpenConversation={async (sessionId) => {
             setActiveConversationSessionId(sessionId);
+            await AsyncStorage.setItem(getActiveConversationStorageKey(user.uid), sessionId);
             setStage("conversation");
           }}
         />

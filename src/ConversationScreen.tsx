@@ -12,8 +12,10 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+  createAudioPlayer,
   RecordingPresets,
   requestRecordingPermissionsAsync,
+  setIsAudioActiveAsync,
   setAudioModeAsync,
   useAudioRecorder,
   useAudioRecorderState
@@ -25,11 +27,15 @@ import {
   getScenarioSession,
   launchScenario,
   ScenarioSessionResponse,
+  ScenarioSpeechResponse,
   ScenarioTurn,
   respondScenarioVoice,
   sendScenarioMessage,
   sendScenarioVoice,
-  transcribeScenarioVoice
+  synthesizeScenarioTutorSpeech,
+  transcribeScenarioVoice,
+  translateScenarioTurn,
+  updateSupportLanguage
 } from "./api";
 import { firestore } from "./firebase";
 import { colors, radii } from "./theme";
@@ -49,10 +55,29 @@ type LocalScenarioTurn = ScenarioTurn & {
   pending?: boolean;
 };
 
+type TranslationStatus = "generating" | "ready" | "cached";
+
 type SupportLanguageConfig = {
+  native: string;
   label: string;
   speechLanguage: string;
 };
+
+const SUPPORT_LANGUAGE_OPTIONS: SupportLanguageConfig[] = [
+  { native: "English", label: "English", speechLanguage: "en-US" },
+  { native: "EspaÃ±ol", label: "Spanish", speechLanguage: "es-ES" },
+  { native: "FranÃ§ais", label: "French", speechLanguage: "fr-FR" },
+  { native: "Ð ÑƒÑÑÐºÐ¸Ð¹", label: "Russian", speechLanguage: "ru-RU" },
+  { native: "Other", label: "English", speechLanguage: "en-US" }
+];
+
+const NORMALIZED_SUPPORT_LANGUAGE_OPTIONS: SupportLanguageConfig[] = [
+  { native: "English", label: "English", speechLanguage: "en-US" },
+  { native: "Spanish", label: "Spanish", speechLanguage: "es-ES" },
+  { native: "French", label: "French", speechLanguage: "fr-FR" },
+  { native: "Russian", label: "Russian", speechLanguage: "ru-RU" },
+  { native: "Other", label: "English", speechLanguage: "en-US" }
+];
 
 function formatSeconds(value: number): string {
   const totalSeconds = Math.max(0, Math.floor(value));
@@ -65,26 +90,25 @@ function stripNiqqud(s: string): string {
   return s.replace(/[\u0591-\u05BD\u05BF-\u05C2\u05C4-\u05C7]/g, '');
 }
 
-function containsHebrew(text: string): boolean {
-  return /[\u0590-\u05FF]/.test(text);
+function isHebrewOnlyLearnerText(text: string): boolean {
+  const trimmed = text.trim();
+
+  if (!trimmed) {
+    return false;
+  }
+
+  return !/[A-Za-z]/.test(trimmed) && /^[\u0590-\u05FF0-9\s.,!?'"():;+\-/%]+$/u.test(trimmed);
 }
 
 function getSupportLanguageConfig(nativeLanguage?: string | null): SupportLanguageConfig {
-  const value = (nativeLanguage || "").toLowerCase();
+  const value = nativeLanguage || "";
+  const matched =
+    NORMALIZED_SUPPORT_LANGUAGE_OPTIONS.find((option) => option.native === value) ||
+    (value.includes("Espa") ? NORMALIZED_SUPPORT_LANGUAGE_OPTIONS[1] : null) ||
+    (value.includes("Fran") ? NORMALIZED_SUPPORT_LANGUAGE_OPTIONS[2] : null) ||
+    (value.includes("Ñ") || value.includes("Ð") ? NORMALIZED_SUPPORT_LANGUAGE_OPTIONS[3] : null);
 
-  if (value.includes("espa")) {
-    return { label: "Spanish", speechLanguage: "es-ES" };
-  }
-
-  if (value.includes("fran")) {
-    return { label: "French", speechLanguage: "fr-FR" };
-  }
-
-  if (value.includes("рус") || value.includes("ñƒñ")) {
-    return { label: "Russian", speechLanguage: "ru-RU" };
-  }
-
-  return { label: "English", speechLanguage: "en-US" };
+  return matched || NORMALIZED_SUPPORT_LANGUAGE_OPTIONS[0];
 }
 
 function getPronunciationIssue(feedback?: string): { label: string; hint: string } {
@@ -109,6 +133,36 @@ function getPronunciationIssue(feedback?: string): { label: string; hint: string
   };
 }
 
+function formatSeverity(value?: "low" | "medium" | "high"): string {
+  if (value === "high") {
+    return "HIGH";
+  }
+  if (value === "low") {
+    return "LOW";
+  }
+  return "MEDIUM";
+}
+
+function prioritizePronunciationIssues<T extends { label: string; severity?: "low" | "medium" | "high"; issueCount?: number }>(issues: T[]): T[] {
+  return [...issues].sort((left, right) => {
+    const leftTzadi = left.label === "TZADI" ? 1 : 0;
+    const rightTzadi = right.label === "TZADI" ? 1 : 0;
+
+    if (leftTzadi !== rightTzadi) {
+      return rightTzadi - leftTzadi;
+    }
+
+    const severityRank = { high: 3, medium: 2, low: 1 } as const;
+    const severityDelta = severityRank[right.severity || "medium"] - severityRank[left.severity || "medium"];
+
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    return (right.issueCount || 0) - (left.issueCount || 0);
+  });
+}
+
 const DEMO_TURNS: ScenarioTurn[] = [
   {
     role: "tutor",
@@ -125,7 +179,18 @@ const DEMO_TURNS: ScenarioTurn[] = [
       accuracyScore: 80,
       fluencyScore: 85,
       feedback: "TZADI: tap to practice the soft tz",
-      scoringMode: "audio"
+      scoringMode: "audio",
+      issues: [
+        {
+          label: "TZADI",
+          issueCount: 1,
+          severity: "medium",
+          affectedWord: "ביצים",
+          expectedSound: "ts",
+          heardApproximation: "s",
+          hint: "Keep the tzadi as one crisp ts sound."
+        }
+      ]
     }
   },
   {
@@ -150,17 +215,120 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [minimized, setMinimized] = React.useState(false);
   const [showHints, setShowHints] = React.useState(false);
   const [showCorrectionSheet, setShowCorrectionSheet] = React.useState(false);
+  const [selectedCorrectionTurn, setSelectedCorrectionTurn] = React.useState<LocalScenarioTurn | null>(null);
   const [showSceneMenu, setShowSceneMenu] = React.useState(false);
   const [showTranslations, setShowTranslations] = React.useState<Record<number, boolean>>({});
   const [autoSpeakEnabled, setAutoSpeakEnabled] = React.useState(true);
   const [error, setError] = React.useState("");
   const [mode, setMode] = React.useState<Mode>("speaking");
   const [recordingReady, setRecordingReady] = React.useState(false);
+  const [selectedSupportNative, setSelectedSupportNative] = React.useState("English");
+  const [translationCache, setTranslationCache] = React.useState<Record<string, string>>({});
+  const [translationStatus, setTranslationStatus] = React.useState<Record<string, TranslationStatus>>({});
+  const [speechCache, setSpeechCache] = React.useState<Record<string, ScenarioSpeechResponse>>({});
   const lastSpokenTutorTurnRef = React.useRef("");
   const initialSnapshotSeenRef = React.useRef(false);
+  const translationRequestCacheRef = React.useRef<Record<string, Promise<string>>>({});
+  const speechRequestCacheRef = React.useRef<Record<string, Promise<ScenarioSpeechResponse>>>({});
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
-  const supportLanguage = getSupportLanguageConfig(session?.learnerProfile?.native);
+  const tutorPlayerRef = React.useRef(createAudioPlayer());
+  const supportLanguage = getSupportLanguageConfig(selectedSupportNative);
+
+  const getTranslationCacheKey = React.useCallback((text: string, native: string) => `${native}::${text}`, []);
+  const getSpeechCacheKey = React.useCallback((text: string) => text.trim(), []);
+
+  const getResolvedTurnTranslation = React.useCallback(
+    (turn: Pick<ScenarioTurn, "text" | "translation">) => {
+      const cached = translationCache[getTranslationCacheKey(turn.text, selectedSupportNative)];
+
+      if (cached) {
+        return cached;
+      }
+
+      if ((session?.learnerProfile?.native || "English") === selectedSupportNative && turn.translation) {
+        return turn.translation;
+      }
+
+      return null;
+    },
+    [getTranslationCacheKey, selectedSupportNative, session?.learnerProfile?.native, translationCache]
+  );
+
+  const ensureSupportTranslation = React.useCallback(
+    async (turn: Pick<ScenarioTurn, "text" | "translation">) => {
+      const existing = getResolvedTurnTranslation(turn);
+
+      if (existing) {
+        return existing;
+      }
+
+      const key = getTranslationCacheKey(turn.text, selectedSupportNative);
+      const pendingRequest = translationRequestCacheRef.current[key];
+
+      if (pendingRequest) {
+        return await pendingRequest;
+      }
+
+      setTranslationStatus((current) => ({
+        ...current,
+        [key]: "generating"
+      }));
+
+      const request = translateScenarioTurn(user, sessionId, turn.text, selectedSupportNative)
+        .then((response) => {
+          setTranslationCache((current) => ({
+            ...current,
+            [key]: response.translation
+          }));
+          setTranslationStatus((current) => ({
+            ...current,
+            [key]: response.liveModelCall ? "ready" : "cached"
+          }));
+          return response.translation;
+        })
+        .finally(() => {
+          delete translationRequestCacheRef.current[key];
+        });
+
+      translationRequestCacheRef.current[key] = request;
+      return await request;
+    },
+    [getResolvedTurnTranslation, getTranslationCacheKey, selectedSupportNative, sessionId, user]
+  );
+
+  const ensureTutorSpeech = React.useCallback(
+    async (text: string) => {
+      const key = getSpeechCacheKey(text);
+      const cached = speechCache[key];
+
+      if (cached) {
+        return cached;
+      }
+
+      const pendingRequest = speechRequestCacheRef.current[key];
+
+      if (pendingRequest) {
+        return await pendingRequest;
+      }
+
+      const request = synthesizeScenarioTutorSpeech(user, sessionId, text)
+        .then((response) => {
+          setSpeechCache((current) => ({
+            ...current,
+            [key]: response
+          }));
+          return response;
+        })
+        .finally(() => {
+          delete speechRequestCacheRef.current[key];
+        });
+
+      speechRequestCacheRef.current[key] = request;
+      return await request;
+    },
+    [getSpeechCacheKey, sessionId, speechCache, user]
+  );
 
   const speakPhrase = React.useCallback((text: string) => {
     const clean = stripNiqqud(text).trim();
@@ -177,32 +345,47 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     });
   }, []);
 
+  const playTutorAudio = React.useCallback(async (speech: ScenarioSpeechResponse) => {
+    const player = tutorPlayerRef.current;
+    const dataUri = `data:${speech.mimeType};base64,${speech.audioBase64}`;
+    player.pause();
+    player.replace({ uri: dataUri });
+    player.play();
+  }, []);
+
   const speakTutorTurn = React.useCallback(
-    (turn: Pick<ScenarioTurn, "text" | "translation">) => {
+    async (turn: Pick<ScenarioTurn, "text" | "translation">) => {
       const cleanReply = stripNiqqud(turn.text).trim();
-      const cleanTranslation = (turn.translation || "").trim();
 
       if (!cleanReply) {
         return;
       }
 
-      Speech.stop();
-      Speech.speak(cleanReply, {
-        language: "he-IL",
-        pitch: 1.0,
-        rate: 0.92,
-        onDone: cleanTranslation
-          ? () => {
-              Speech.speak(cleanTranslation, {
-                language: supportLanguage.speechLanguage,
-                pitch: 1.0,
-                rate: 0.95
-              });
-            }
-          : undefined
-      });
+      const currentTranslation = await ensureSupportTranslation(turn).catch(() => getResolvedTurnTranslation(turn) || "");
+      const cleanTranslation = currentTranslation.trim();
+
+      try {
+        const speech = await ensureTutorSpeech(cleanReply);
+        await playTutorAudio(speech);
+      } catch {
+        Speech.stop();
+        Speech.speak(cleanReply, {
+          language: "he-IL",
+          pitch: 1.0,
+          rate: 0.92,
+          onDone: cleanTranslation
+            ? () => {
+                Speech.speak(cleanTranslation, {
+                  language: supportLanguage.speechLanguage,
+                  pitch: 1.0,
+                  rate: 0.95
+                });
+              }
+            : undefined
+        });
+      }
     },
-    [supportLanguage.speechLanguage]
+    [ensureSupportTranslation, ensureTutorSpeech, getResolvedTurnTranslation, playTutorAudio, supportLanguage.speechLanguage]
   );
 
   React.useEffect(() => {
@@ -242,6 +425,15 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   }, []);
 
   React.useEffect(() => {
+    void setIsAudioActiveAsync(true).catch(() => undefined);
+
+    return () => {
+      tutorPlayerRef.current.pause();
+      tutorPlayerRef.current.remove();
+    };
+  }, []);
+
+  React.useEffect(() => {
     let active = true;
     const sessionRef = doc(firestore, "users", user.uid, "scenarioSessions", sessionId);
 
@@ -277,6 +469,46 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               ];
 
         setSession(data);
+        setSelectedSupportNative(data.learnerProfile?.native || "English");
+        if (data.supportTranslations && data.learnerProfile?.native) {
+          const persisted = data.supportTranslations[data.learnerProfile.native] || {};
+          setTranslationCache((current) => {
+            const next = { ...current };
+
+            for (const entry of Object.values(persisted)) {
+              if (typeof entry === "string") {
+                continue;
+              }
+
+              const sourceText = entry?.sourceText?.trim();
+              const translation = entry?.translation?.trim();
+
+              if (sourceText && translation) {
+                next[getTranslationCacheKey(sourceText, data.learnerProfile?.native || "English")] = translation;
+              }
+            }
+
+            return next;
+          });
+          setTranslationStatus((current) => {
+            const next = { ...current };
+
+            for (const entry of Object.values(persisted)) {
+              if (typeof entry === "string") {
+                continue;
+              }
+
+              const sourceText = entry?.sourceText?.trim();
+              const translation = entry?.translation?.trim();
+
+              if (sourceText && translation) {
+                next[getTranslationCacheKey(sourceText, data.learnerProfile?.native || "English")] = "cached";
+              }
+            }
+
+            return next;
+          });
+        }
         setTurns(fallbackTurns as LocalScenarioTurn[]);
         setLoading(false);
         initialSnapshotSeenRef.current = true;
@@ -293,7 +525,47 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           }
 
           setSession(data);
+          setSelectedSupportNative(data.learnerProfile?.native || "English");
           const existingTurns = Array.isArray(data.turns) ? data.turns : [];
+          if (data.supportTranslations && data.learnerProfile?.native) {
+            const persisted = data.supportTranslations[data.learnerProfile.native] || {};
+            setTranslationCache((current) => {
+              const next = { ...current };
+
+              for (const entry of Object.values(persisted)) {
+                if (typeof entry === "string") {
+                  continue;
+                }
+
+                const sourceText = entry?.sourceText?.trim();
+                const translation = entry?.translation?.trim();
+
+                if (sourceText && translation) {
+                  next[getTranslationCacheKey(sourceText, data.learnerProfile?.native || "English")] = translation;
+                }
+              }
+
+              return next;
+            });
+            setTranslationStatus((current) => {
+              const next = { ...current };
+
+              for (const entry of Object.values(persisted)) {
+                if (typeof entry === "string") {
+                  continue;
+                }
+
+                const sourceText = entry?.sourceText?.trim();
+                const translation = entry?.translation?.trim();
+
+                if (sourceText && translation) {
+                  next[getTranslationCacheKey(sourceText, data.learnerProfile?.native || "English")] = "cached";
+                }
+              }
+
+              return next;
+            });
+          }
           setTurns(
             existingTurns.length > 0
               ? (existingTurns as LocalScenarioTurn[])
@@ -325,7 +597,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       active = false;
       unsubscribe();
     };
-  }, [sessionId, user.uid]);
+  }, [getTranslationCacheKey, sessionId, user.uid]);
 
   React.useEffect(() => {
     if (sending) {
@@ -347,6 +619,34 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   }, [recorderState.isRecording, sending, turns]);
 
   React.useEffect(() => {
+    let active = true;
+
+    async function backfillSupportTranslations() {
+      for (const turn of turns) {
+        if (!active || turn.role !== "tutor") {
+          continue;
+        }
+
+        if (getResolvedTurnTranslation(turn)) {
+          continue;
+        }
+
+        try {
+          await ensureSupportTranslation(turn);
+        } catch {
+          // Do not block the conversation if one backfill request fails.
+        }
+      }
+    }
+
+    void backfillSupportTranslations();
+
+    return () => {
+      active = false;
+    };
+  }, [ensureSupportTranslation, getResolvedTurnTranslation, selectedSupportNative, turns]);
+
+  React.useEffect(() => {
     const lastTurn = turns[turns.length - 1];
 
     if (!autoSpeakEnabled || !lastTurn || lastTurn.role !== "tutor") {
@@ -362,6 +662,22 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     lastSpokenTutorTurnRef.current = turnKey;
     speakTutorTurn(lastTurn);
   }, [autoSpeakEnabled, speakTutorTurn, turns]);
+
+  const activePronunciation = selectedCorrectionTurn?.pronunciation;
+  const activePronunciationIssues = prioritizePronunciationIssues(activePronunciation?.issues || []);
+  const primaryPronunciationIssue =
+    activePronunciationIssues[0] ||
+    (activePronunciation
+      ? {
+          label: getPronunciationIssue(activePronunciation.feedback).label,
+          issueCount: 1,
+          severity: "medium" as const,
+          affectedWord: selectedCorrectionTurn?.text || "Unknown",
+          expectedSound: "target sound",
+          heardApproximation: "unclear",
+          hint: getPronunciationIssue(activePronunciation.feedback).hint
+        }
+      : null);
 
   React.useEffect(() => {
     return () => {
@@ -463,7 +779,18 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               accuracyScore: 80,
               fluencyScore: 85,
               feedback: "TZADI: tap to practice the soft tz",
-              scoringMode: "audio"
+              scoringMode: "audio",
+              issues: [
+                {
+                  label: "TZADI",
+                  issueCount: 1,
+                  severity: "medium",
+                  affectedWord: "ביצים",
+                  expectedSound: "ts",
+                  heardApproximation: "s",
+                  hint: "Keep the tzadi as one crisp ts sound."
+                }
+              ]
             }
           },
           {
@@ -488,8 +815,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       return;
     }
 
-    if (!containsHebrew(message)) {
-      setError("Send your learner turn in Hebrew. Use the hint button if you need a phrase.");
+    if (!isHebrewOnlyLearnerText(message)) {
+      setError("Send your learner turn in Hebrew only. Use the hint button if you need a phrase.");
       return;
     }
 
@@ -536,6 +863,9 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           return turn;
         })
       );
+      void ensureTutorSpeech(response.tutorTurn.text)
+        .then((speech) => playTutorAudio(speech))
+        .catch(() => void speakTutorTurn(response.tutorTurn));
       setSending(false);
     } catch {
       setTurns((current) =>
@@ -590,6 +920,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         referenceText: textValue.trim() || undefined
       });
 
+      if (!isHebrewOnlyLearnerText(transcriptResponse.transcript)) {
+        throw new Error("Spoken input must be Hebrew only.");
+      }
+
       const learnerLocalId = `voice-learner-${Date.now()}`;
       const pendingTutorId = `voice-tutor-${Date.now()}`;
 
@@ -624,6 +958,9 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           return [turn];
         })
       );
+      void ensureTutorSpeech(response.tutorTurn.text)
+        .then((speech) => playTutorAudio(speech))
+        .catch(() => void speakTutorTurn(response.tutorTurn));
       setTextValue("");
       setSending(false);
     } catch (voiceError) {
@@ -650,10 +987,46 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     }
   }
 
+  async function handleChangeSupportLanguage(native: string) {
+    if (sending || native === selectedSupportNative) {
+      setShowSceneMenu(false);
+      return;
+    }
+
+    setError("");
+    setSelectedSupportNative(native);
+
+    try {
+      await updateSupportLanguage(user, { native });
+      setSession((current) =>
+        current
+          ? {
+              ...current,
+              learnerProfile: {
+                ...current.learnerProfile,
+                native
+              }
+            }
+          : current
+      );
+      setShowSceneMenu(false);
+    } catch (updateError) {
+      setSelectedSupportNative(session?.learnerProfile?.native || "English");
+      setError(updateError instanceof Error ? updateError.message : "Failed to update support language.");
+    }
+  }
+
   const toggleTranslation = (index: number) => {
+    const turn = turns[index];
+    const nextVisible = !showTranslations[index];
+
+    if (nextVisible && turn?.role === "tutor") {
+      void ensureSupportTranslation(turn).catch(() => undefined);
+    }
+
     setShowTranslations((prev) => ({
       ...prev,
-      [index]: !prev[index]
+      [index]: nextVisible
     }));
   };
 
@@ -717,14 +1090,25 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           {turns.map((turn, index) => (
             <MessageBubble
               key={`${turn.role}-${turn.createdAt}-${index}`}
-              turn={turn}
+              turn={{
+                ...turn,
+                translation: turn.role === "tutor" ? getResolvedTurnTranslation(turn) : turn.translation
+              }}
               index={index}
               tutorName={session?.tutorVoice?.name || "Dana"}
               speaking={mode === "speaking" && index === turns.length - 1 && turn.role === "tutor"}
               showTranslation={!!showTranslations[index]}
+              translationStatus={
+                turn.role === "tutor"
+                  ? translationStatus[getTranslationCacheKey(turn.text, selectedSupportNative)] || null
+                  : null
+              }
               onToggleTranslation={() => toggleTranslation(index)}
-              onSeeMore={() => setShowCorrectionSheet(true)}
-              onReplay={() => (turn.role === "tutor" ? speakTutorTurn(turn) : speakPhrase(turn.text))}
+              onSeeMore={() => {
+                setSelectedCorrectionTurn(turn);
+                setShowCorrectionSheet(true);
+              }}
+              onReplay={() => (turn.role === "tutor" ? void speakTutorTurn(turn) : speakPhrase(turn.text))}
             />
           ))}
           {error ? (
@@ -789,28 +1173,55 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           <Pressable style={styles.sheetBackdrop} onPress={() => setShowCorrectionSheet(false)} />
           <View style={styles.sheetCard}>
             <View style={styles.sheetGrabber} />
-            <Text style={styles.sheetEyebrow}>PRONUNCIATION · MEDIUM</Text>
-            <Text style={styles.sheetTitle}>The tzadi is soft.</Text>
-            
-            <View style={styles.correctionCard}>
-              <View style={styles.correctionHeader}>
-                <Text style={styles.correctionLabel}>YOU SAID</Text>
-                <Text style={styles.correctionTrans}>BAY·TSEEM</Text>
-              </View>
-              <Text style={styles.correctionHebrewRed}>בֵּיצִים</Text>
-            </View>
+            <Text style={styles.sheetEyebrow}>PRONUNCIATION · {formatSeverity(primaryPronunciationIssue?.severity)}</Text>
+            <Text style={styles.sheetTitle}>{primaryPronunciationIssue?.label || "Pronunciation detail"}</Text>
 
-            <View style={styles.correctionCard}>
-              <View style={styles.correctionHeader}>
-                <Text style={styles.correctionLabel}>SAY IT LIKE</Text>
-                <Text style={styles.correctionTransGreen}>BEI·TZIM</Text>
-              </View>
-              <Text style={styles.correctionHebrewGreen}>בֵּיצִים</Text>
-            </View>
+            {primaryPronunciationIssue ? (
+              <>
+                <View style={styles.correctionCard}>
+                  <View style={styles.correctionHeader}>
+                    <Text style={styles.correctionLabel}>AFFECTED WORD</Text>
+                    <Text style={styles.correctionTrans}>{primaryPronunciationIssue.issueCount}x</Text>
+                  </View>
+                  <Text style={styles.correctionHebrewRed}>{primaryPronunciationIssue.affectedWord}</Text>
+                </View>
 
-            <Text style={styles.correctionDesc}>
-              The צ (tzadi) in Hebrew is one sound, like ts in cats. Not two beats.
-            </Text>
+                <View style={styles.correctionCard}>
+                  <View style={styles.correctionHeader}>
+                    <Text style={styles.correctionLabel}>TARGET VS HEARD</Text>
+                    <Text style={styles.correctionTransGreen}>{primaryPronunciationIssue.expectedSound}</Text>
+                  </View>
+                  <Text style={styles.correctionHebrewGreen}>heard like {primaryPronunciationIssue.heardApproximation}</Text>
+                </View>
+
+                <Text style={styles.correctionDesc}>{primaryPronunciationIssue.hint}</Text>
+
+                {activePronunciation ? (
+                  <View style={styles.pronunciationScoreRow}>
+                    <Text style={styles.pronunciationScorePill}>Overall {activePronunciation.overallScore}</Text>
+                    <Text style={styles.pronunciationScorePill}>Accuracy {activePronunciation.accuracyScore}</Text>
+                    <Text style={styles.pronunciationScorePill}>Fluency {activePronunciation.fluencyScore}</Text>
+                  </View>
+                ) : null}
+
+                {activePronunciationIssues.length > 1 ? (
+                  <View style={styles.issueDetailStack}>
+                    {activePronunciationIssues.slice(1).map((issue, index) => (
+                      <View key={`${issue.label}-${index}`} style={styles.issueDetailCard}>
+                        <Text style={styles.issueDetailTitle}>
+                          {issue.label} · {formatSeverity(issue.severity)} · {issue.issueCount}x
+                        </Text>
+                        <Text style={styles.issueDetailBody}>
+                          {issue.affectedWord}: expected {issue.expectedSound}, heard {issue.heardApproximation}. {issue.hint}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+              </>
+            ) : (
+              <Text style={styles.correctionDesc}>No pronunciation issue details were returned for this turn.</Text>
+            )}
 
             <View style={styles.correctionActions}>
               <Pressable style={styles.correctionBtnGhost} onPress={() => setShowCorrectionSheet(false)}>
@@ -846,6 +1257,28 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                   : "AI replies are muted. Tap to turn speech back on."}
               </Text>
             </Pressable>
+            <View style={styles.sheetItemStatic}>
+              <Text style={styles.sheetItemActionTitle}>Support language voice</Text>
+              <Text style={styles.sheetItemSubText}>
+                Hebrew plays first. Then the support translation plays in {supportLanguage.label}.
+              </Text>
+              <View style={styles.languageOptionStack}>
+                {NORMALIZED_SUPPORT_LANGUAGE_OPTIONS.map((option) => {
+                  const selected = option.native === selectedSupportNative;
+                  return (
+                    <Pressable
+                      key={option.native}
+                      style={[styles.languageOptionPill, selected ? styles.languageOptionPillActive : null]}
+                      onPress={() => void handleChangeSupportLanguage(option.native)}
+                    >
+                      <Text style={[styles.languageOptionPillText, selected ? styles.languageOptionPillTextActive : null]}>
+                        {option.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
             <Pressable style={styles.sheetItem} onPress={handleResetScene} disabled={sending}>
               <Text style={styles.sheetItemActionTitle}>Start fresh scene</Text>
               <Text style={styles.sheetItemSubText}>Create a brand new variation and reset the conversation.</Text>
@@ -1087,6 +1520,7 @@ function MessageBubble({
   tutorName,
   speaking,
   showTranslation,
+  translationStatus,
   onToggleTranslation,
   onSeeMore,
   onReplay
@@ -1096,6 +1530,7 @@ function MessageBubble({
   tutorName: string;
   speaking: boolean;
   showTranslation: boolean;
+  translationStatus: TranslationStatus | null;
   onToggleTranslation: () => void;
   onSeeMore: () => void;
   onReplay: () => void;
@@ -1134,7 +1569,16 @@ function MessageBubble({
 
         {/* Translation Section (for Tutor only) */}
         {!isLearner && !turn.pending && translation && showTranslation ? (
-          <Text style={styles.messageTranslation}>"{translation}"</Text>
+          <>
+            <Text style={styles.messageTranslation}>"{translation}"</Text>
+            {translationStatus ? (
+              <Text style={styles.messageTranslationStatus}>
+                {translationStatus === "cached" ? "Cached" : translationStatus === "ready" ? "Ready" : "Generating..."}
+              </Text>
+            ) : null}
+          </>
+        ) : !isLearner && !turn.pending && showTranslation && translationStatus === "generating" ? (
+          <Text style={styles.messageTranslationStatus}>Generating support translation...</Text>
         ) : null}
 
         {/* Action Controls (Audio Replay & Translate) under Tutor Bubbles */}
@@ -1908,6 +2352,13 @@ const styles = StyleSheet.create({
     borderTopColor: "rgba(244,236,222,0.15)",
     borderStyle: "dashed"
   },
+  messageTranslationStatus: {
+    marginTop: 4,
+    fontSize: 11,
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+    color: "rgba(244,236,222,0.48)"
+  },
   messageActionsRow: {
     flexDirection: "row",
     gap: 6,
@@ -2062,6 +2513,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line
   },
+  sheetItemStatic: {
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 16,
+    backgroundColor: colors.paper,
+    borderWidth: 1,
+    borderColor: colors.line
+  },
   sheetItemRow: {
     flexDirection: "row",
     alignItems: "center"
@@ -2083,6 +2542,34 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontStyle: "italic",
     marginTop: 4
+  },
+  languageOptionStack: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 12
+  },
+  languageOptionPill: {
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: colors.lineStrong,
+    backgroundColor: colors.bone,
+    alignItems: "center",
+    justifyContent: "center"
+  },
+  languageOptionPillActive: {
+    backgroundColor: colors.terracotta,
+    borderColor: colors.terracotta
+  },
+  languageOptionPillText: {
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: "600"
+  },
+  languageOptionPillTextActive: {
+    color: colors.bone
   },
   sheetItemListen: {
     minWidth: 34,
@@ -2181,6 +2668,42 @@ const styles = StyleSheet.create({
     color: colors.inkMute,
     lineHeight: 20,
     marginVertical: 12
+  },
+  pronunciationScoreRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 16
+  },
+  pronunciationScorePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: radii.pill,
+    backgroundColor: colors.paperGlass,
+    color: colors.inkMute,
+    fontSize: 12
+  },
+  issueDetailStack: {
+    gap: 10,
+    marginBottom: 18
+  },
+  issueDetailCard: {
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: 18,
+    padding: 12,
+    backgroundColor: colors.paper
+  },
+  issueDetailTitle: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: "600",
+    marginBottom: 4
+  },
+  issueDetailBody: {
+    color: colors.inkMute,
+    fontSize: 13,
+    lineHeight: 19
   },
   correctionActions: {
     flexDirection: "row",
