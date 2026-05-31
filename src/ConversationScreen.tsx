@@ -163,48 +163,6 @@ function prioritizePronunciationIssues<T extends { label: string; severity?: "lo
   });
 }
 
-const DEMO_TURNS: ScenarioTurn[] = [
-  {
-    role: "tutor",
-    text: "שָׁלוֹם! בָּרוּךְ הַבָּא לַסּוּפֵּר. בְּמַה אוּכַל לַעֲזֹר?",
-    createdAt: new Date(Date.now() - 10000).toISOString(),
-  },
-  {
-    role: "learner",
-    text: "שָׁלוֹם, אֲנִי מְחַפֵּשׂ בֵּיצִים בְּבַקָּשָׁה.",
-    createdAt: new Date(Date.now() - 5000).toISOString(),
-    inputMode: "voice",
-    pronunciation: {
-      overallScore: 82,
-      accuracyScore: 80,
-      fluencyScore: 85,
-      feedback: "TZADI: tap to practice the soft tz",
-      scoringMode: "audio",
-      issues: [
-        {
-          label: "TZADI",
-          issueCount: 1,
-          severity: "medium",
-          affectedWord: "ביצים",
-          expectedSound: "ts",
-          heardApproximation: "s",
-          hint: "Keep the tzadi as one crisp ts sound."
-        }
-      ]
-    }
-  },
-  {
-    role: "tutor",
-    text: "בְּסֵדֶר גָּמוּר. הַבֵּיצִים נִמְצָאוֹת בַּמְּקָרֵר בַּצַּד הַשְּׂמָאלִי. אֵיזֶה גֹּדֶל אַתָּה מְחַפֵּשׂ?",
-    createdAt: new Date().toISOString(),
-  }
-];
-
-const ENGLISH_TRANSLATIONS: Record<string, string> = {
-  "שָׁלוֹם! בָּרוּךְ הַבָּא לַסּוּפֵּר. בְּמַה אוּכַל לַעֲזֹר?": "Hi! Welcome to the supermarket. How can I help?",
-  "בְּסֵדֶר גָּמוּר. הַבֵּיצִים נִמְצָאוֹת בַּמְּקָרֵר בַּצַּד הַשְּׂמָאלִי. אֵיזֶה גֹּדֶל אַתָּה מְחַפֵּשׂ?": "No problem. The eggs are in the fridge on the left side. What size are you looking for?"
-};
-
 export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }: Props) {
   const [session, setSession] = React.useState<ScenarioSessionResponse | null>(null);
   const [turns, setTurns] = React.useState<LocalScenarioTurn[]>([]);
@@ -460,7 +418,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
             : [
                 {
                   role: "tutor" as const,
-                  text: data.conversation?.starterLine || DEMO_TURNS[0]?.text || "Let's begin.",
+                  text: data.conversation?.starterLine || "Let's begin.",
                   createdAt: new Date().toISOString(),
                   provider: data.provider,
                   model: undefined,
@@ -572,7 +530,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
               : [
                   {
                     role: "tutor",
-                    text: data.conversation?.starterLine || DEMO_TURNS[0]?.text || "Let's begin.",
+                    text: data.conversation?.starterLine || "Let's begin.",
                     createdAt: new Date().toISOString(),
                     provider: data.provider,
                     model: undefined,
@@ -582,7 +540,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           );
         } catch {
           if (active) {
-            setTurns(DEMO_TURNS as LocalScenarioTurn[]);
+            setError("Failed to load scenario session.");
+            setTurns([]);
           }
         } finally {
           if (active) {
@@ -709,18 +668,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       const response = await sendScenarioMessage(user, sessionId, message);
       setTurns((current) => [...current, response.tutorTurn]);
     } catch (messageError) {
-      // In demo/offline mode, auto-reply with a realistic tutor turn to keep it fully working
-      setTimeout(() => {
-        setTurns((current) => [
-          ...current,
-          {
-            role: "tutor",
-            text: "בְּסֵדֶר גָּמוּר. הַבֵּיצִים נִמְצָאוֹת בַּמְּקָרֵר בַּצַּד הַשְּׂמָאלִי. אֵיזֶה גֹּדֶל אַתָּה מְחַפֵּשׂ?",
-            createdAt: new Date().toISOString()
-          }
-        ]);
-        setSending(false);
-      }, 1000);
+      setError(messageError instanceof Error ? messageError.message : "Scenario message failed.");
     }
   }
 
@@ -766,39 +714,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         setTextValue("");
         setSending(false);
       } catch {
-        // Fallback for demo/offline: add learner turn and tutor turn
-        setTurns((current) => [
-          ...current,
-          {
-            role: "learner",
-            text: "שָׁלוֹם, אֲנִי מְחַפֵּשׂ בֵּיצִים בְּבַקָּשָׁה.",
-            createdAt: new Date().toISOString(),
-            inputMode: "voice",
-            pronunciation: {
-              overallScore: 82,
-              accuracyScore: 80,
-              fluencyScore: 85,
-              feedback: "TZADI: tap to practice the soft tz",
-              scoringMode: "audio",
-              issues: [
-                {
-                  label: "TZADI",
-                  issueCount: 1,
-                  severity: "medium",
-                  affectedWord: "ביצים",
-                  expectedSound: "ts",
-                  heardApproximation: "s",
-                  hint: "Keep the tzadi as one crisp ts sound."
-                }
-              ]
-            }
-          },
-          {
-            role: "tutor",
-            text: "בְּסֵדֶר גָּמוּר. הַבֵּיצִים נִמְצָאוֹת בַּמְּקָרֵר בַּצַּד הַשְּׂמָאלִי. אֵיזֶה גֹּדֶל אַתָּה מְחַפֵּשׂ?",
-            createdAt: new Date().toISOString()
-          }
-        ]);
+        setError("Voice scenario failed.");
+        return;
         setTextValue("");
         setSending(false);
       }
@@ -868,18 +785,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         .catch(() => void speakTutorTurn(response.tutorTurn));
       setSending(false);
     } catch {
-      setTurns((current) =>
-        current.map((turn) =>
-          turn.localId === pendingTutorId
-            ? {
-                role: "tutor",
-                text: "בסדר גמור. הביצים נמצאות במקרר בצד השמאלי. איזה גודל אתה מחפש?",
-                translation: "No problem. The eggs are in the fridge on the left side. What size are you looking for?",
-                createdAt: new Date().toISOString()
-              }
-            : turn
-        )
-      );
+      setError("Voice scenario failed.");
+      return;
       setSending(false);
     }
   }
@@ -979,7 +886,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     setError("");
 
     try {
-      const freshSession = await launchScenario(user, session.theme.id, session.provider || "gemini", true);
+      const freshSession = await launchScenario(user, session.theme.id, "openai", true);
       onReplaceSession(freshSession.sessionId);
     } catch (resetError) {
       setError(resetError instanceof Error ? resetError.message : "Failed to reset the scene.");
@@ -2913,4 +2820,10 @@ const styles = StyleSheet.create({
     marginTop: 2
   }
 });
+
+
+
+
+
+
 

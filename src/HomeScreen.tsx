@@ -299,7 +299,7 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     }
 
     try {
-      const response = await launchScenario(user, theme.id, "gemini");
+      const response = await launchScenario(user, theme.id, "openai");
       setSelectedVoiceName(response.tutorVoice.name);
       onOpenConversation(response.sessionId);
     } catch {

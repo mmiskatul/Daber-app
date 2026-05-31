@@ -352,7 +352,7 @@ export async function getScenarioThemes(user: User): Promise<{ todayThemeId: str
 export async function launchScenario(
   user: User,
   themeId: string,
-  provider: "gemini" | "openai" = "gemini",
+  provider: "gemini" | "openai" = "openai",
   forceNew = false
 ): Promise<ScenarioLaunchResponse> {
   const token = await user.getIdToken();
