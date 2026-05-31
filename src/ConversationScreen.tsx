@@ -83,6 +83,8 @@ type VoiceDraft = {
   fileName: string;
 };
 
+const VOICE_RECORDING_MAX_MS = 12000;
+
 function formatSeconds(value: number): string {
   const totalSeconds = Math.max(0, Math.floor(value));
   const minutes = Math.floor(totalSeconds / 60);
@@ -207,10 +209,19 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const initialSnapshotSeenRef = React.useRef(false);
   const translationRequestCacheRef = React.useRef<Record<string, Promise<string>>>({});
   const speechRequestCacheRef = React.useRef<Record<string, Promise<ScenarioSpeechResponse>>>({});
+  const voiceStopTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceRecordingActiveRef = React.useRef(false);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
   const tutorPlayerRef = React.useRef(createAudioPlayer());
   const supportLanguage = getSupportLanguageConfig(selectedSupportNative);
+
+  const clearVoiceStopTimer = React.useCallback(() => {
+    if (voiceStopTimerRef.current) {
+      clearTimeout(voiceStopTimerRef.current);
+      voiceStopTimerRef.current = null;
+    }
+  }, []);
 
   const getTranslationCacheKey = React.useCallback((text: string, native: string) => `${native}::${text}`, []);
   const getSpeechCacheKey = React.useCallback((text: string) => text.trim(), []);
@@ -405,10 +416,11 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     void setIsAudioActiveAsync(true).catch(() => undefined);
 
     return () => {
+      clearVoiceStopTimer();
       tutorPlayerRef.current.pause();
       tutorPlayerRef.current.remove();
     };
-  }, []);
+  }, [clearVoiceStopTimer]);
 
   React.useEffect(() => {
     let active = true;
@@ -626,8 +638,14 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
   React.useEffect(() => {
     const lastTurn = turns[turns.length - 1];
+    const starterLine = session?.conversation?.starterLine?.trim() || "";
+    const onlyStarterLine =
+      turns.length === 1 &&
+      lastTurn?.role === "tutor" &&
+      starterLine &&
+      lastTurn.text.trim() === starterLine;
 
-    if (!autoSpeakEnabled || !lastTurn || lastTurn.role !== "tutor") {
+    if (!autoSpeakEnabled || !lastTurn || lastTurn.role !== "tutor" || onlyStarterLine) {
       return;
     }
 
@@ -639,7 +657,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
     lastSpokenTutorTurnRef.current = turnKey;
     speakTutorTurn(lastTurn);
-  }, [autoSpeakEnabled, speakTutorTurn, turns]);
+  }, [autoSpeakEnabled, session?.conversation?.starterLine, speakTutorTurn, turns]);
 
   const activePronunciation = selectedCorrectionTurn?.pronunciation;
   const activePronunciationIssues = prioritizePronunciationIssues(activePronunciation?.issues || []);
@@ -688,6 +706,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       setTurns((current) => [...current, response.tutorTurn]);
     } catch (messageError) {
       setError(messageError instanceof Error ? messageError.message : "Scenario message failed.");
+    } finally {
+      setSending(false);
     }
   }
 
@@ -701,8 +721,15 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     if (!recorderState.isRecording) {
       try {
         setVoiceDraft(null);
+        clearVoiceStopTimer();
         await audioRecorder.prepareToRecordAsync();
         audioRecorder.record();
+        voiceRecordingActiveRef.current = true;
+        voiceStopTimerRef.current = setTimeout(() => {
+          if (voiceRecordingActiveRef.current) {
+            void handleVoiceToggle();
+          }
+        }, VOICE_RECORDING_MAX_MS);
       } catch {
         setError("Failed to start recording.");
       }
@@ -710,6 +737,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     }
 
     try {
+      voiceRecordingActiveRef.current = false;
+      clearVoiceStopTimer();
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
 
@@ -732,6 +761,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     }
 
     try {
+      clearVoiceStopTimer();
+      voiceRecordingActiveRef.current = false;
       let draft = draftOverride || voiceDraft;
 
       if (recorderState.isRecording) {
@@ -776,9 +807,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       setSending(true);
       setError("");
 
-      const audioBase64 = await fileUriToBase64(draft.uri);
       const response = await sendScenarioVoice(user, sessionId, {
-        audioBase64,
+        audioUri: draft.uri,
         mimeType: draft.mimeType,
         fileName: draft.fileName,
         referenceText: textValue.trim() || undefined
@@ -804,6 +834,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       setTurns((current) => current.filter((turn) => !String(turn.localId || "").startsWith("voice-learner-") && !String(turn.localId || "").startsWith("pending-tutor-")));
       setError(voiceError instanceof Error ? voiceError.message : "Failed to send the recorded voice.");
     } finally {
+      clearVoiceStopTimer();
+      voiceRecordingActiveRef.current = false;
       setSending(false);
     }
   }
@@ -868,6 +900,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         .catch(() => void speakTutorTurn(response.tutorTurn));
     } catch {
       setError("Voice scenario failed.");
+    } finally {
+      setSending(false);
     }
   }
 
@@ -1640,17 +1674,6 @@ async function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = () => reject(new Error("Failed to read the recorded audio."));
     reader.readAsDataURL(blob);
   });
-}
-
-async function fileUriToBase64(uri: string): Promise<string> {
-  const response = await fetch(uri);
-
-  if (!response.ok) {
-    throw new Error("Failed to load the recorded audio file.");
-  }
-
-  const blob = await response.blob();
-  return await blobToBase64(blob);
 }
 
 const styles = StyleSheet.create({

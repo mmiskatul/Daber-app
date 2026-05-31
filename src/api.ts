@@ -284,7 +284,15 @@ async function request<T>(path: string, token: string, body?: unknown, method = 
   }
 
   if (!response.ok || payload.status !== true) {
-    throw new Error(payload.message || "Backend request failed.");
+    const code = !payload.status && payload.details && typeof payload.details === "object" && "code" in payload.details
+      ? String(payload.details.code || "")
+      : "";
+    const cause = !payload.status && payload.details && typeof payload.details === "object" && "cause" in payload.details
+      ? payload.details.cause
+      : null;
+    const causeText = typeof cause === "string" && cause.trim() ? `: ${cause.trim()}` : "";
+    const codeText = code ? ` [${code}]` : "";
+    throw new Error(`${payload.message || "Backend request failed."}${codeText}${causeText}`);
   }
 
   return payload;
@@ -427,20 +435,59 @@ export async function sendScenarioVoice(
   user: User,
   sessionId: string,
   input: {
-    audioBase64: string;
+    audioUri: string;
     mimeType?: string;
     fileName?: string;
     referenceText?: string;
   }
 ): Promise<ScenarioVoiceResponse> {
   const token = await user.getIdToken();
-  const response = await request<ScenarioVoiceResponse>(`/scenarios/sessions/${sessionId}/voice`, token, input);
+  const formData = new FormData();
+  formData.append("audio", {
+    uri: input.audioUri,
+    type: input.mimeType || "audio/mp4",
+    name: input.fileName || "learner-audio.m4a"
+  } as any);
 
-  if (!response.details) {
+  if (input.mimeType) {
+    formData.append("mimeType", input.mimeType);
+  }
+
+  if (input.fileName) {
+    formData.append("fileName", input.fileName);
+  }
+
+  if (input.referenceText) {
+    formData.append("referenceText", input.referenceText);
+  }
+
+  const response = await fetch(`${appConfig.backendBaseUrl}/scenarios/sessions/${sessionId}/voice`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`
+    },
+    body: formData
+  });
+
+  const payload = (await response.json()) as ApiSuccess<ScenarioVoiceResponse> | ApiError;
+
+  if (!response.ok || payload.status !== true) {
+    const code = !payload.status && payload.details && typeof payload.details === "object" && "code" in payload.details
+      ? String(payload.details.code || "")
+      : "";
+    const cause = !payload.status && payload.details && typeof payload.details === "object" && "cause" in payload.details
+      ? payload.details.cause
+      : null;
+    const causeText = typeof cause === "string" && cause.trim() ? `: ${cause.trim()}` : "";
+    const codeText = code ? ` [${code}]` : "";
+    throw new Error(`${payload.message || "Backend request failed."}${codeText}${causeText}`);
+  }
+
+  if (!payload.details) {
     throw new Error("Scenario voice response was not returned by the backend.");
   }
 
-  return response.details;
+  return payload.details;
 }
 
 export async function transcribeScenarioVoice(
