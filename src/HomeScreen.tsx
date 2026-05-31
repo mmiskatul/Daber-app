@@ -10,7 +10,8 @@ import { GuidedGamesScreen } from "./GuidedGamesScreen";
 
 type Props = {
   user: User;
-  onOpenConversation: (sessionId: string) => void;
+  onOpenConversation: (sessionId: string, returnTab?: TabKey) => void;
+  initialTab?: TabKey;
 };
 
 type TabKey = "home" | "scenarios" | "games";
@@ -217,8 +218,8 @@ const HERO_DETAILS: Record<string, { title: string; he: string; watermark: strin
   }
 };
 
-export function HomeScreen({ user, onOpenConversation }: Props) {
-  const [tab, setTab] = React.useState<TabKey>("home");
+export function HomeScreen({ user, onOpenConversation, initialTab = "home" }: Props) {
+  const [tab, setTab] = React.useState<TabKey>(initialTab);
   const [detail, setDetail] = React.useState<DetailState | null>(null);
   const [selectedVoiceName, setSelectedVoiceName] = React.useState("Dana");
   const [activeGame, setActiveGame] = React.useState<null | "translate" | "tf" | "echo" | "verbs" | "words">(null);
@@ -286,7 +287,7 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     };
   }, [user]);
 
-  async function handleThemeTap(theme: ThemeItem) {
+  async function handleThemeTap(theme: ThemeItem, returnTab: TabKey = "scenarios") {
     if (theme.locked) {
       setDetail({
         kind: "roadmap",
@@ -301,7 +302,7 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
     try {
       const response = await launchScenario(user, theme.id, "openai");
       setSelectedVoiceName(response.tutorVoice.name);
-      onOpenConversation(response.sessionId);
+      onOpenConversation(response.sessionId, returnTab);
     } catch {
       setDetail({
         kind: "roadmap",
@@ -542,13 +543,16 @@ export function HomeScreen({ user, onOpenConversation }: Props) {
       {detail ? (
         <DetailOverlay
           detail={detail}
-          onClose={() => setDetail(null)}
+          onClose={() => {
+            setDetail(null);
+            setTab("home");
+          }}
           onAction={async () => {
             setDetail(null);
             if (detail.action === "Resume" || detail.action === "Continue") {
               const supermarketTheme = THEMES.find((theme) => theme.id === "supermarket");
               if (supermarketTheme) {
-                await handleThemeTap(supermarketTheme);
+                await handleThemeTap(supermarketTheme, "home");
               }
             }
           }}

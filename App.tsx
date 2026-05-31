@@ -5,7 +5,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { StatusBar } from "expo-status-bar";
 import { User, onAuthStateChanged } from "firebase/auth";
 import { auth } from "./src/firebase";
-import { getCurrentUser, getOnboarding, syncUser, completeRoadmapStop, getRoadmap } from "./src/api";
+import { getCurrentUser, getOnboarding, syncUser, getRoadmap } from "./src/api";
 import { AuthScreen } from "./src/AuthScreen";
 import { ConversationScreen } from "./src/ConversationScreen";
 import { HomeScreen } from "./src/HomeScreen";
@@ -13,6 +13,7 @@ import { OnboardingScreen } from "./src/OnboardingScreen";
 import { colors, radii } from "./src/theme";
 
 type AppStage = "loading" | "auth" | "onboarding" | "home" | "conversation";
+type HomeTab = "home" | "scenarios" | "games";
 
 function getActiveConversationStorageKey(uid: string) {
   return `daber_active_conversation:${uid}`;
@@ -23,6 +24,7 @@ export default function App() {
   const [user, setUser] = React.useState<User | null>(null);
   const [showSplash, setShowSplash] = React.useState(true);
   const [activeConversationSessionId, setActiveConversationSessionId] = React.useState("");
+  const [homeTab, setHomeTab] = React.useState<HomeTab>("home");
 
   React.useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (nextUser) => {
@@ -39,22 +41,19 @@ export default function App() {
       try {
         await syncUser(nextUser);
         const profile = await getCurrentUser(nextUser);
-        const storedConversationSessionId = await AsyncStorage.getItem(getActiveConversationStorageKey(nextUser.uid));
 
         if (profile.onboardingCompleted || profile.onboarding) {
-          if (storedConversationSessionId) {
-            setActiveConversationSessionId(storedConversationSessionId);
-            setStage("conversation");
-            return;
-          }
-
+          setActiveConversationSessionId("");
+          setHomeTab("home");
           setStage("home");
           return;
         }
 
         const onboarding = await getOnboarding(nextUser);
+        setHomeTab("home");
         setStage(onboarding ? "home" : "onboarding");
       } catch {
+        setHomeTab("home");
         setStage("onboarding");
       }
     });
@@ -88,15 +87,6 @@ export default function App() {
             await AsyncStorage.setItem(getActiveConversationStorageKey(user.uid), nextSessionId);
           }}
           onExit={async () => {
-            try {
-              const stops = await getRoadmap(user);
-              const currentStop = stops.find((s) => s.kind === "current");
-              if (currentStop) {
-                await completeRoadmapStop(user, currentStop.id);
-              }
-            } catch (err) {
-              console.error("Failed to complete stop:", err);
-            }
             setActiveConversationSessionId("");
             await AsyncStorage.removeItem(getActiveConversationStorageKey(user.uid));
             setStage("home");
@@ -105,7 +95,9 @@ export default function App() {
       ) : (
         <HomeScreen
           user={user}
-          onOpenConversation={async (sessionId) => {
+          initialTab={homeTab}
+          onOpenConversation={async (sessionId, returnTab = "home") => {
+            setHomeTab(returnTab);
             setActiveConversationSessionId(sessionId);
             await AsyncStorage.setItem(getActiveConversationStorageKey(user.uid), sessionId);
             setStage("conversation");
