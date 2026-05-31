@@ -29,11 +29,9 @@ import {
   ScenarioSessionResponse,
   ScenarioSpeechResponse,
   ScenarioTurn,
-  respondScenarioVoice,
   sendScenarioMessage,
   sendScenarioVoice,
   synthesizeScenarioTutorSpeech,
-  transcribeScenarioVoice,
   translateScenarioTurn,
   updateSupportLanguage
 } from "./api";
@@ -79,6 +77,12 @@ const NORMALIZED_SUPPORT_LANGUAGE_OPTIONS: SupportLanguageConfig[] = [
   { native: "Other", label: "English", speechLanguage: "en-US" }
 ];
 
+type VoiceDraft = {
+  uri: string;
+  mimeType: string;
+  fileName: string;
+};
+
 function formatSeconds(value: number): string {
   const totalSeconds = Math.max(0, Math.floor(value));
   const minutes = Math.floor(totalSeconds / 60);
@@ -111,25 +115,39 @@ function getSupportLanguageConfig(nativeLanguage?: string | null): SupportLangua
   return matched || NORMALIZED_SUPPORT_LANGUAGE_OPTIONS[0];
 }
 
-function getPronunciationIssue(feedback?: string): { label: string; hint: string } {
+function getPronunciationIssue(feedback?: string): {
+  label: string;
+  hint: string;
+  expectedSound: string;
+  heardApproximation: string;
+} {
   const clean = (feedback || "").trim();
 
   if (!clean) {
-    return { label: "SOUND", hint: "tap to review this sound" };
+    return {
+      label: "SOUND",
+      hint: "tap to review this sound",
+      expectedSound: "target sound",
+      heardApproximation: "unclear"
+    };
   }
 
   const parts = clean.split(":");
   if (parts.length > 1) {
     return {
       label: parts[0]?.trim().toUpperCase() || "SOUND",
-      hint: parts.slice(1).join(":").trim() || "tap to review this sound"
+      hint: parts.slice(1).join(":").trim() || "tap to review this sound",
+      expectedSound: parts.slice(1).join(":").trim() || "target sound",
+      heardApproximation: parts.slice(1).join(":").trim() || "unclear"
     };
   }
 
   const word = clean.split(/\s+/)[0] || "SOUND";
   return {
     label: word.replace(/[^A-Za-zא-ת]/g, "").toUpperCase() || "SOUND",
-    hint: clean
+    hint: clean,
+    expectedSound: clean,
+    heardApproximation: "unclear"
   };
 }
 
@@ -180,6 +198,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [error, setError] = React.useState("");
   const [mode, setMode] = React.useState<Mode>("speaking");
   const [recordingReady, setRecordingReady] = React.useState(false);
+  const [voiceDraft, setVoiceDraft] = React.useState<VoiceDraft | null>(null);
   const [selectedSupportNative, setSelectedSupportNative] = React.useState("English");
   const [translationCache, setTranslationCache] = React.useState<Record<string, string>>({});
   const [translationStatus, setTranslationStatus] = React.useState<Record<string, TranslationStatus>>({});
@@ -672,7 +691,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     }
   }
 
-  async function handleVoicePress() {
+  async function handleVoiceToggle() {
     if (!recordingReady || sending) {
       return;
     }
@@ -681,6 +700,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
     if (!recorderState.isRecording) {
       try {
+        setVoiceDraft(null);
         await audioRecorder.prepareToRecordAsync();
         audioRecorder.record();
       } catch {
@@ -688,8 +708,6 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       }
       return;
     }
-
-    setSending(true);
 
     try {
       await audioRecorder.stop();
@@ -699,28 +717,93 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         throw new Error("Recorded audio file was not available.");
       }
 
-      // Try sending to the backend
-      try {
-        const audioBase64 = await fileUriToBase64(uri);
-        const { mimeType, fileName } = inferAudioMeta(uri);
-        const response = await sendScenarioVoice(user, sessionId, {
-          audioBase64,
-          mimeType,
-          fileName,
-          referenceText: textValue.trim() || undefined
-        });
-
-        setTurns((current) => [...current, response.learnerTurn, response.tutorTurn]);
-        setTextValue("");
-        setSending(false);
-      } catch {
-        setError("Voice scenario failed.");
-        return;
-        setTextValue("");
-        setSending(false);
-      }
+      const { mimeType, fileName } = inferAudioMeta(uri);
+      const draft = { uri, mimeType, fileName };
+      setVoiceDraft(draft);
+      void handleSendVoice(draft);
     } catch (voiceError) {
-      setError(voiceError instanceof Error ? voiceError.message : "Failed to process spoken answer.");
+      setError(voiceError instanceof Error ? voiceError.message : "Failed to stop recording.");
+    }
+  }
+
+  async function handleSendVoice(draftOverride?: VoiceDraft) {
+    if (sending || !session) {
+      return;
+    }
+
+    try {
+      let draft = draftOverride || voiceDraft;
+
+      if (recorderState.isRecording) {
+        await audioRecorder.stop();
+        const uri = audioRecorder.uri;
+
+        if (!uri) {
+          throw new Error("Recorded audio file was not available.");
+        }
+
+        const meta = inferAudioMeta(uri);
+        draft = { uri, ...meta };
+        setVoiceDraft(draft);
+      }
+
+      if (!draft) {
+        throw new Error("Record a voice draft first, then send it.");
+      }
+
+      const voiceLearnerId = `voice-learner-${Date.now()}`;
+      const pendingTutorId = `pending-tutor-${Date.now()}`;
+      const voicePreviewText = "Voice note";
+
+      setTurns((current) => [
+        ...current,
+        {
+          role: "learner",
+          text: voicePreviewText,
+          createdAt: new Date().toISOString(),
+          inputMode: "voice",
+          localId: voiceLearnerId
+        },
+        {
+          role: "tutor",
+          text: "",
+          createdAt: new Date().toISOString(),
+          localId: pendingTutorId,
+          pending: true
+        }
+      ]);
+
+      setSending(true);
+      setError("");
+
+      const audioBase64 = await fileUriToBase64(draft.uri);
+      const response = await sendScenarioVoice(user, sessionId, {
+        audioBase64,
+        mimeType: draft.mimeType,
+        fileName: draft.fileName,
+        referenceText: textValue.trim() || undefined
+      });
+
+      setTurns((current) =>
+        current.map((turn) => {
+          if (turn.localId === voiceLearnerId) {
+            return response.learnerTurn;
+          }
+          if (turn.localId === pendingTutorId) {
+            return response.tutorTurn;
+          }
+          return turn;
+        })
+      );
+      setTextValue("");
+      setVoiceDraft(null);
+      void ensureTutorSpeech(response.tutorTurn.text)
+        .then((speech) => playTutorAudio(speech))
+        .catch(() => void speakTutorTurn(response.tutorTurn));
+    } catch (voiceError) {
+      setTurns((current) => current.filter((turn) => !String(turn.localId || "").startsWith("voice-learner-") && !String(turn.localId || "").startsWith("pending-tutor-")));
+      setError(voiceError instanceof Error ? voiceError.message : "Failed to send the recorded voice.");
+    } finally {
       setSending(false);
     }
   }
@@ -783,96 +866,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       void ensureTutorSpeech(response.tutorTurn.text)
         .then((speech) => playTutorAudio(speech))
         .catch(() => void speakTutorTurn(response.tutorTurn));
-      setSending(false);
     } catch {
       setError("Voice scenario failed.");
-      return;
-      setSending(false);
-    }
-  }
-
-  async function handleVoicePressLive() {
-    if (!recordingReady || sending) {
-      return;
-    }
-
-    setError("");
-
-    if (!recorderState.isRecording) {
-      try {
-        await audioRecorder.prepareToRecordAsync();
-        audioRecorder.record();
-      } catch {
-        setError("Failed to start recording.");
-      }
-      return;
-    }
-
-    setSending(true);
-
-    try {
-      await audioRecorder.stop();
-      const uri = audioRecorder.uri;
-
-      if (!uri) {
-        throw new Error("Recorded audio file was not available.");
-      }
-
-      const audioBase64 = await fileUriToBase64(uri);
-      const { mimeType, fileName } = inferAudioMeta(uri);
-      const transcriptResponse = await transcribeScenarioVoice(user, sessionId, {
-        audioBase64,
-        mimeType,
-        fileName,
-        referenceText: textValue.trim() || undefined
-      });
-
-      if (!isHebrewOnlyLearnerText(transcriptResponse.transcript)) {
-        throw new Error("Spoken input must be Hebrew only.");
-      }
-
-      const learnerLocalId = `voice-learner-${Date.now()}`;
-      const pendingTutorId = `voice-tutor-${Date.now()}`;
-
-      setTurns((current) => [
-        ...current,
-        {
-          ...transcriptResponse.learnerTurn,
-          localId: learnerLocalId
-        },
-        {
-          role: "tutor",
-          text: "",
-          createdAt: new Date().toISOString(),
-          localId: pendingTutorId,
-          pending: true
-        }
-      ]);
-
-      const response = await respondScenarioVoice(user, sessionId, {
-        transcript: transcriptResponse.transcript,
-        referenceText: textValue.trim() || undefined
-      });
-
-      setTurns((current) =>
-        current.flatMap((turn) => {
-          if (turn.localId === learnerLocalId) {
-            return [response.learnerTurn];
-          }
-          if (turn.localId === pendingTutorId) {
-            return [response.tutorTurn];
-          }
-          return [turn];
-        })
-      );
-      void ensureTutorSpeech(response.tutorTurn.text)
-        .then((speech) => playTutorAudio(speech))
-        .catch(() => void speakTutorTurn(response.tutorTurn));
-      setTextValue("");
-      setSending(false);
-    } catch (voiceError) {
-      setError(voiceError instanceof Error ? voiceError.message : "Failed to process spoken answer.");
-      setSending(false);
     }
   }
 
@@ -1095,10 +1090,12 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
                 <View style={styles.correctionCard}>
                   <View style={styles.correctionHeader}>
-                    <Text style={styles.correctionLabel}>TARGET VS HEARD</Text>
+                    <Text style={styles.correctionLabel}>HOW IT SHOULD SOUND</Text>
                     <Text style={styles.correctionTransGreen}>{primaryPronunciationIssue.expectedSound}</Text>
                   </View>
-                  <Text style={styles.correctionHebrewGreen}>heard like {primaryPronunciationIssue.heardApproximation}</Text>
+                  <Text style={styles.correctionHebrewGreen}>
+                    heard as {primaryPronunciationIssue.heardApproximation}
+                  </Text>
                 </View>
 
                 <Text style={styles.correctionDesc}>{primaryPronunciationIssue.hint}</Text>
@@ -1248,13 +1245,13 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                     <LockGlyph />
                   </View>
                 ) : null}
-                <Pressable
-                  style={[
-                    styles.voiceButton,
-                    recorderState.isRecording ? styles.voiceButtonRecording : null,
-                    !recordingReady || sending ? styles.sendButtonDisabled : null
+              <Pressable
+                style={[
+                  styles.voiceButton,
+                  recorderState.isRecording ? styles.voiceButtonRecording : null,
+                  !recordingReady || sending ? styles.sendButtonDisabled : null
                   ]}
-                  onPress={handleVoicePressLive}
+                  onPress={handleVoiceToggle}
                   disabled={!recordingReady || sending}
                 >
                   {/* Custom high-fidelity microphone vector */}
@@ -1262,7 +1259,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                     <View style={styles.micPill} />
                     <View style={styles.micCup} />
                     <View style={styles.micStandLeg} />
-                    <View style={styles.micStandBase} />
+                  <View style={styles.micStandBase} />
                   </View>
                 </Pressable>
               </View>
@@ -1277,6 +1274,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                 <Text style={styles.voiceHintLabel}>Hint</Text>
               </Pressable>
             </View>
+            <Text style={styles.voiceDraftText}>Pause recording to send automatically.</Text>
           </View>
         )}
       </View>
@@ -1441,12 +1439,12 @@ function MessageBubble({
   onToggleTranslation: () => void;
   onSeeMore: () => void;
   onReplay: () => void;
-}) {
+  }) {
   const isLearner = turn.role === "learner";
   const text = turn.text;
   const translation = turn.translation;
   const hasIssue = turn.pronunciation && turn.role === "learner";
-  const issue = getPronunciationIssue(turn.pronunciation?.feedback);
+  const issue = turn.pronunciation?.issues?.[0] || getPronunciationIssue(turn.pronunciation?.feedback);
 
   return (
     <View style={[styles.messageRow, isLearner ? styles.messageRowLearner : styles.messageRowTutor]}>
@@ -1531,8 +1529,11 @@ function MessageBubble({
           >
             <View style={styles.issueDotPill}>
               <View style={styles.goldDot} />
-                <Text style={styles.issuePillText}>{issue.label}</Text>
-              </View>
+              <Text style={styles.issuePillText}>{issue.label}</Text>
+            </View>
+            <Text style={styles.issueBannerDesc}>
+              heard as {issue.heardApproximation} · should sound like {issue.expectedSound}
+            </Text>
             <Text style={styles.issueBannerDesc}>{issue.hint}</Text>
           </Pressable>
         ) : null}
@@ -2726,6 +2727,31 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     width: "100%",
     paddingHorizontal: 10
+  },
+  voiceDraftBar: {
+    marginTop: 10,
+    width: "100%",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 18,
+    backgroundColor: "rgba(26,20,16,0.05)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10
+  },
+  voiceDraftText: {
+    flex: 1,
+    color: colors.inkMute,
+    fontSize: 12.5
+  },
+  voiceDraftSendButton: {
+    minHeight: 38,
+    paddingHorizontal: 16,
+    borderRadius: radii.pill,
+    backgroundColor: colors.terracotta,
+    alignItems: "center",
+    justifyContent: "center"
   },
   typeTextToggle: {
     flexDirection: "row",

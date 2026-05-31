@@ -67,6 +67,7 @@ export type ScenarioLaunchResponse = {
   sessionId: string;
   provider: "gemini" | "openai";
   providerConfigured: boolean;
+  learnerInstructionSummary: string;
   theme: {
     id: string;
     title: string;
