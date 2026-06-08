@@ -83,6 +83,11 @@ type VoiceDraft = {
   fileName: string;
 };
 
+type RequestMetrics = {
+  lastResponseMs: number | null;
+  lastInputMode: "voice" | "text" | null;
+};
+
 const VOICE_RECORDING_MAX_MS = 12000;
 
 function formatSeconds(value: number): string {
@@ -90,6 +95,18 @@ function formatSeconds(value: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+function formatLatency(value: number | null): string {
+  if (value === null) {
+    return "--";
+  }
+
+  if (value < 1000) {
+    return `${value} ms`;
+  }
+
+  return `${(value / 1000).toFixed(1)} s`;
 }
 
 function stripNiqqud(s: string): string {
@@ -195,6 +212,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [showCorrectionSheet, setShowCorrectionSheet] = React.useState(false);
   const [selectedCorrectionTurn, setSelectedCorrectionTurn] = React.useState<LocalScenarioTurn | null>(null);
   const [showSceneMenu, setShowSceneMenu] = React.useState(false);
+  const [showSessionReview, setShowSessionReview] = React.useState(false);
   const [showTranslations, setShowTranslations] = React.useState<Record<number, boolean>>({});
   const [autoSpeakEnabled, setAutoSpeakEnabled] = React.useState(true);
   const [error, setError] = React.useState("");
@@ -205,6 +223,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [translationCache, setTranslationCache] = React.useState<Record<string, string>>({});
   const [translationStatus, setTranslationStatus] = React.useState<Record<string, TranslationStatus>>({});
   const [speechCache, setSpeechCache] = React.useState<Record<string, ScenarioSpeechResponse>>({});
+  const [requestMetrics, setRequestMetrics] = React.useState<RequestMetrics>({
+    lastResponseMs: null,
+    lastInputMode: null
+  });
   const lastSpokenTutorTurnRef = React.useRef("");
   const initialSnapshotSeenRef = React.useRef(false);
   const translationRequestCacheRef = React.useRef<Record<string, Promise<string>>>({});
@@ -613,7 +635,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
     async function backfillSupportTranslations() {
       for (const turn of turns) {
-        if (!active || turn.role !== "tutor") {
+        if (
+          !active ||
+          (turn.role !== "tutor" && !(turn.role === "learner" && turn.inputMode === "voice"))
+        ) {
           continue;
         }
 
@@ -660,20 +685,35 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   }, [autoSpeakEnabled, session?.conversation?.starterLine, speakTutorTurn, turns]);
 
   const activePronunciation = selectedCorrectionTurn?.pronunciation;
-  const activePronunciationIssues = prioritizePronunciationIssues(activePronunciation?.issues || []);
-  const primaryPronunciationIssue =
-    activePronunciationIssues[0] ||
-    (activePronunciation
-      ? {
-          label: getPronunciationIssue(activePronunciation.feedback).label,
-          issueCount: 1,
-          severity: "medium" as const,
-          affectedWord: selectedCorrectionTurn?.text || "Unknown",
-          expectedSound: "target sound",
-          heardApproximation: "unclear",
-          hint: getPronunciationIssue(activePronunciation.feedback).hint
-        }
-      : null);
+  const learnerVoiceTurns = React.useMemo(
+    () =>
+      turns.filter(
+        (turn): turn is LocalScenarioTurn & { pronunciation: PronunciationFeedback } =>
+          turn.role === "learner" && turn.inputMode === "voice" && !!turn.pronunciation
+      ),
+    [turns]
+  );
+  const latestVoiceFeedback = learnerVoiceTurns[learnerVoiceTurns.length - 1]?.pronunciation || null;
+  const averageOverallScore =
+    learnerVoiceTurns.length > 0
+      ? Math.round(
+          learnerVoiceTurns.reduce((sum, turn) => sum + turn.pronunciation.overallScore, 0) / learnerVoiceTurns.length
+        )
+      : null;
+  const averageAccuracyScore =
+    learnerVoiceTurns.length > 0
+      ? Math.round(
+          learnerVoiceTurns.reduce((sum, turn) => sum + turn.pronunciation.accuracyScore, 0) / learnerVoiceTurns.length
+        )
+      : null;
+  const averageFluencyScore =
+    learnerVoiceTurns.length > 0
+      ? Math.round(
+          learnerVoiceTurns.reduce((sum, turn) => sum + turn.pronunciation.fluencyScore, 0) / learnerVoiceTurns.length
+        )
+      : null;
+  const flaggedIssueCount = learnerVoiceTurns.reduce((sum, turn) => sum + (turn.pronunciation.issues?.length || 0), 0);
+  const sceneSummary = session?.variation?.situation || session?.theme?.blurb || "";
 
   React.useEffect(() => {
     return () => {
@@ -711,28 +751,31 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     }
   }
 
-  async function handleVoiceToggle() {
-    if (!recordingReady || sending) {
+  async function startVoiceRecording() {
+    if (!recordingReady || sending || recorderState.isRecording) {
       return;
     }
 
     setError("");
 
+    try {
+      setVoiceDraft(null);
+      clearVoiceStopTimer();
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      voiceRecordingActiveRef.current = true;
+      voiceStopTimerRef.current = setTimeout(() => {
+        if (voiceRecordingActiveRef.current) {
+          void stopVoiceRecording();
+        }
+      }, VOICE_RECORDING_MAX_MS);
+    } catch {
+      setError("Failed to start recording.");
+    }
+  }
+
+  async function stopVoiceRecording() {
     if (!recorderState.isRecording) {
-      try {
-        setVoiceDraft(null);
-        clearVoiceStopTimer();
-        await audioRecorder.prepareToRecordAsync();
-        audioRecorder.record();
-        voiceRecordingActiveRef.current = true;
-        voiceStopTimerRef.current = setTimeout(() => {
-          if (voiceRecordingActiveRef.current) {
-            void handleVoiceToggle();
-          }
-        }, VOICE_RECORDING_MAX_MS);
-      } catch {
-        setError("Failed to start recording.");
-      }
       return;
     }
 
@@ -806,6 +849,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
       setSending(true);
       setError("");
+      const requestStartedAt = Date.now();
 
       const response = await sendScenarioVoice(user, sessionId, {
         audioUri: draft.uri,
@@ -827,6 +871,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       );
       setTextValue("");
       setVoiceDraft(null);
+      setRequestMetrics({
+        lastResponseMs: Date.now() - requestStartedAt,
+        lastInputMode: "voice"
+      });
       void ensureTutorSpeech(response.tutorTurn.text)
         .then((speech) => playTutorAudio(speech))
         .catch(() => void speakTutorTurn(response.tutorTurn));
@@ -876,6 +924,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       }
     ]);
     setTextValue("");
+    const requestStartedAt = Date.now();
 
     try {
       const response = await sendScenarioMessage(user, sessionId, message);
@@ -895,6 +944,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           return turn;
         })
       );
+      setRequestMetrics({
+        lastResponseMs: Date.now() - requestStartedAt,
+        lastInputMode: "text"
+      });
       void ensureTutorSpeech(response.tutorTurn.text)
         .then((speech) => playTutorAudio(speech))
         .catch(() => void speakTutorTurn(response.tutorTurn));
@@ -1021,14 +1074,14 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           <ActivityIndicator color={colors.terracotta} />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={styles.transcriptWrap} showsVerticalScrollIndicator={false}>
+            <ScrollView contentContainerStyle={styles.transcriptWrap} showsVerticalScrollIndicator={false}>
           {minimized ? <MinimizedAvatar mode={mode} onExpand={() => setMinimized(false)} /> : null}
           {turns.map((turn, index) => (
             <MessageBubble
               key={`${turn.role}-${turn.createdAt}-${index}`}
               turn={{
                 ...turn,
-                translation: turn.role === "tutor" ? getResolvedTurnTranslation(turn) : turn.translation
+                translation: getResolvedTurnTranslation(turn) || turn.translation
               }}
               index={index}
               tutorName={session?.tutorVoice?.name || "Dana"}
@@ -1109,53 +1162,17 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           <Pressable style={styles.sheetBackdrop} onPress={() => setShowCorrectionSheet(false)} />
           <View style={styles.sheetCard}>
             <View style={styles.sheetGrabber} />
-            <Text style={styles.sheetEyebrow}>PRONUNCIATION · {formatSeverity(primaryPronunciationIssue?.severity)}</Text>
-            <Text style={styles.sheetTitle}>{primaryPronunciationIssue?.label || "Pronunciation detail"}</Text>
+            <Text style={styles.sheetEyebrow}>PRONUNCIATION</Text>
+            <Text style={styles.sheetTitle}>Pronunciation detail</Text>
 
-            {primaryPronunciationIssue ? (
+            {activePronunciation ? (
               <>
-                <View style={styles.correctionCard}>
-                  <View style={styles.correctionHeader}>
-                    <Text style={styles.correctionLabel}>AFFECTED WORD</Text>
-                    <Text style={styles.correctionTrans}>{primaryPronunciationIssue.issueCount}x</Text>
-                  </View>
-                  <Text style={styles.correctionHebrewRed}>{primaryPronunciationIssue.affectedWord}</Text>
+                <View style={styles.pronunciationScoreRow}>
+                  <Text style={styles.pronunciationScorePill}>Overall {activePronunciation.overallScore}</Text>
+                  <Text style={styles.pronunciationScorePill}>Accuracy {activePronunciation.accuracyScore}</Text>
+                  <Text style={styles.pronunciationScorePill}>Fluency {activePronunciation.fluencyScore}</Text>
                 </View>
-
-                <View style={styles.correctionCard}>
-                  <View style={styles.correctionHeader}>
-                    <Text style={styles.correctionLabel}>HOW IT SHOULD SOUND</Text>
-                    <Text style={styles.correctionTransGreen}>{primaryPronunciationIssue.expectedSound}</Text>
-                  </View>
-                  <Text style={styles.correctionHebrewGreen}>
-                    heard as {primaryPronunciationIssue.heardApproximation}
-                  </Text>
-                </View>
-
-                <Text style={styles.correctionDesc}>{primaryPronunciationIssue.hint}</Text>
-
-                {activePronunciation ? (
-                  <View style={styles.pronunciationScoreRow}>
-                    <Text style={styles.pronunciationScorePill}>Overall {activePronunciation.overallScore}</Text>
-                    <Text style={styles.pronunciationScorePill}>Accuracy {activePronunciation.accuracyScore}</Text>
-                    <Text style={styles.pronunciationScorePill}>Fluency {activePronunciation.fluencyScore}</Text>
-                  </View>
-                ) : null}
-
-                {activePronunciationIssues.length > 1 ? (
-                  <View style={styles.issueDetailStack}>
-                    {activePronunciationIssues.slice(1).map((issue, index) => (
-                      <View key={`${issue.label}-${index}`} style={styles.issueDetailCard}>
-                        <Text style={styles.issueDetailTitle}>
-                          {issue.label} · {formatSeverity(issue.severity)} · {issue.issueCount}x
-                        </Text>
-                        <Text style={styles.issueDetailBody}>
-                          {issue.affectedWord}: expected {issue.expectedSound}, heard {issue.heardApproximation}. {issue.hint}
-                        </Text>
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
+                <Text style={styles.correctionDesc}>{activePronunciation.feedback || "Keep practicing this phrase more clearly."}</Text>
               </>
             ) : (
               <Text style={styles.correctionDesc}>No pronunciation issue details were returned for this turn.</Text>
@@ -1169,6 +1186,52 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                 <View style={styles.correctionBtnTerraInner}><MicGlyph tone="bone" /><Text style={styles.correctionBtnTerraText}>Practice it</Text></View>
               </Pressable>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={showSessionReview}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowSessionReview(false)}
+      >
+        <View style={styles.sheetOverlay}>
+          <Pressable style={styles.sheetBackdrop} onPress={() => setShowSessionReview(false)} />
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetGrabber} />
+            <Text style={styles.sheetEyebrow}>SESSION REVIEW</Text>
+            <Text style={styles.sheetTitle}>Conversation details</Text>
+            {session ? (
+              <View style={styles.reviewSection}>
+                <View style={styles.sceneSummaryHeader}>
+                  <Text style={styles.sceneSummaryEyebrow}>SCENARIO</Text>
+                  <Text style={styles.sceneSummaryBand}>{session.theme.band}</Text>
+                </View>
+                <Text style={styles.sceneSummaryTitle}>{session.theme.title}</Text>
+                <Text style={styles.sceneSummaryBody}>{sceneSummary}</Text>
+              </View>
+            ) : null}
+            <View style={styles.reviewSection}>
+              <Text style={styles.sceneSummaryEyebrow}>VOICE TEST</Text>
+              <View style={styles.insightsGrid}>
+                <InsightStat label="Overall" value={averageOverallScore === null ? "--" : String(averageOverallScore)} />
+                <InsightStat label="Accuracy" value={averageAccuracyScore === null ? "--" : String(averageAccuracyScore)} />
+                <InsightStat label="Fluency" value={averageFluencyScore === null ? "--" : String(averageFluencyScore)} />
+                <InsightStat label="Speed" value={formatLatency(requestMetrics.lastResponseMs)} />
+              </View>
+              <Text style={styles.reviewCopy}>
+                {latestVoiceFeedback
+                  ? `${learnerVoiceTurns.length} voice test${learnerVoiceTurns.length === 1 ? "" : "s"} completed. ${flaggedIssueCount} pronunciation issue${flaggedIssueCount === 1 ? "" : "s"} flagged so far.`
+                  : "Start with a voice turn to see pronunciation accuracy, fluency, and response speed."}
+              </Text>
+              {requestMetrics.lastInputMode ? (
+                <Text style={styles.insightsSubtle}>Latest measured response came from a {requestMetrics.lastInputMode} turn.</Text>
+              ) : null}
+            </View>
+            <Pressable style={styles.sheetButton} onPress={() => setShowSessionReview(false)}>
+              <Text style={styles.sheetButtonText}>Close</Text>
+            </Pressable>
           </View>
         </View>
       </Modal>
@@ -1217,6 +1280,13 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                 })}
               </View>
             </View>
+            <Pressable style={styles.sheetItem} onPress={() => {
+              setShowSceneMenu(false);
+              setShowSessionReview(true);
+            }}>
+              <Text style={styles.sheetItemActionTitle}>Session review</Text>
+              <Text style={styles.sheetItemSubText}>Open the hidden scenario and voice test details.</Text>
+            </Pressable>
             <Pressable style={styles.sheetItem} onPress={handleResetScene} disabled={sending}>
               <Text style={styles.sheetItemActionTitle}>Start fresh scene</Text>
               <Text style={styles.sheetItemSubText}>Create a brand new variation and reset the conversation.</Text>
@@ -1285,7 +1355,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                   recorderState.isRecording ? styles.voiceButtonRecording : null,
                   !recordingReady || sending ? styles.sendButtonDisabled : null
                   ]}
-                  onPress={handleVoiceToggle}
+                  onPressIn={() => void startVoiceRecording()}
+                  onPressOut={() => void stopVoiceRecording()}
                   disabled={!recordingReady || sending}
                 >
                   {/* Custom high-fidelity microphone vector */}
@@ -1308,7 +1379,9 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                 <Text style={styles.voiceHintLabel}>Hint</Text>
               </Pressable>
             </View>
-            <Text style={styles.voiceDraftText}>Pause recording to send automatically.</Text>
+            <Text style={styles.voiceDraftText}>
+              Press and hold to talk. Release to send. Tutor replies speak in Hebrew only.
+            </Text>
           </View>
         )}
       </View>
@@ -1505,7 +1578,10 @@ function MessageBubble({
             <View style={styles.voiceNotePill}>
               <Text style={styles.voiceNotePillText}>Voice</Text>
             </View>
-            <Text style={styles.voiceNoteText}>Voice note sent</Text>
+            <View style={styles.voiceNoteCopy}>
+              <Text style={styles.voiceNoteText}>{translation || text || "Voice note sent"}</Text>
+              {translation && text ? <Text style={styles.voiceNoteOriginal}>{text}</Text> : null}
+            </View>
           </View>
         ) : (
           <Text style={[styles.messageText, isLearner ? styles.messageTextLearner : styles.messageTextTutor]}>
@@ -1579,6 +1655,15 @@ function MessageBubble({
           </Pressable>
         ) : null}
       </View>
+    </View>
+  );
+}
+
+function InsightStat({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.insightStatCard}>
+      <Text style={styles.insightStatValue}>{value}</Text>
+      <Text style={styles.insightStatLabel}>{label}</Text>
     </View>
   );
 }
@@ -2175,6 +2260,95 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     gap: 12
   },
+  sceneSummaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8
+  },
+  sceneSummaryEyebrow: {
+    color: colors.terracotta,
+    fontSize: 11,
+    letterSpacing: 1.4,
+    fontWeight: "700"
+  },
+  sceneSummaryBand: {
+    color: colors.inkMute,
+    fontSize: 12,
+    fontWeight: "600"
+  },
+  sceneSummaryTitle: {
+    color: colors.ink,
+    fontSize: 22,
+    fontWeight: "600"
+  },
+  sceneSummaryBody: {
+    color: colors.inkMute,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 8
+  },
+  insightsCard: {
+    borderRadius: 22,
+    padding: 16,
+    backgroundColor: colors.ink,
+    borderWidth: 1,
+    borderColor: "rgba(26,20,16,0.08)"
+  },
+  insightsHeader: {
+    gap: 6
+  },
+  insightsHeaderCopy: {
+    color: "rgba(244,236,222,0.72)",
+    fontSize: 12,
+    lineHeight: 18
+  },
+  insightsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 14
+  },
+  insightStatCard: {
+    minWidth: "47%",
+    flexGrow: 1,
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "rgba(244,236,222,0.08)"
+  },
+  insightStatValue: {
+    color: colors.bone,
+    fontSize: 22,
+    fontWeight: "700"
+  },
+  insightStatLabel: {
+    color: "rgba(244,236,222,0.6)",
+    fontSize: 11,
+    letterSpacing: 0.8,
+    marginTop: 2,
+    textTransform: "uppercase"
+  },
+  insightsFootnote: {
+    color: colors.bone,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 14
+  },
+  insightsSubtle: {
+    color: "rgba(244,236,222,0.6)",
+    fontSize: 11,
+    marginTop: 6
+  },
+  reviewSection: {
+    marginBottom: 18
+  },
+  reviewCopy: {
+    color: colors.inkMute,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 14
+  },
   minimizedAvatar: {
     position: "absolute",
     top: 0,
@@ -2271,9 +2445,13 @@ const styles = StyleSheet.create({
   },
   voiceNoteRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: 10,
     minHeight: 28
+  },
+  voiceNoteCopy: {
+    flex: 1,
+    gap: 4
   },
   voiceNotePill: {
     paddingHorizontal: 10,
@@ -2291,6 +2469,12 @@ const styles = StyleSheet.create({
     color: colors.bone,
     fontSize: 14,
     fontStyle: "italic"
+  },
+  voiceNoteOriginal: {
+    color: "rgba(244,236,222,0.72)",
+    fontSize: 12,
+    lineHeight: 16,
+    writingDirection: "rtl"
   },
   pendingTutorRow: {
     flexDirection: "row",

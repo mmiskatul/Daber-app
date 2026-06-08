@@ -243,43 +243,17 @@ async function request<T>(path: string, token: string, body?: unknown, method = 
 
   let payload = (await response.json()) as ApiSuccess<T> | ApiError;
 
-  // 2. Check for Token Expiration (401 ACCESS_TOKEN_EXPIRED)
+  // 2. Retry once with a freshly refreshed backend token on any auth failure.
   if (
     response.status === 401 &&
-    payload.status === false &&
-    payload.message === "Access token has expired." &&
     path !== "/auth/sync-user" &&
     path !== "/auth/refresh"
   ) {
-    // Attempt transparent token refresh
-    const storedRefresh = await getStoredRefreshToken();
-    if (storedRefresh) {
-      try {
-        const refreshResponse = await fetch(`${appConfig.backendBaseUrl}/auth/refresh`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({ refreshToken: storedRefresh })
-        });
+    const refreshedToken = await refreshBackendTokens();
 
-        if (refreshResponse.ok) {
-          const refreshPayload = await refreshResponse.json();
-          if (refreshPayload.status === true && refreshPayload.details) {
-            const { accessToken: newAccess, refreshToken: newRefresh } = refreshPayload.details;
-            await storeTokens(newAccess, newRefresh);
-
-            // Retry original request with the fresh Access Token
-            response = await makeCall(newAccess);
-            payload = (await response.json()) as ApiSuccess<T> | ApiError;
-          }
-        } else {
-          // Refresh token expired or invalid; clear all stored tokens
-          await clearTokens();
-        }
-      } catch {
-        // Fall through to throw original 401 error
-      }
+    if (refreshedToken) {
+      response = await makeCall(refreshedToken);
+      payload = (await response.json()) as ApiSuccess<T> | ApiError;
     }
   }
 
@@ -296,6 +270,42 @@ async function request<T>(path: string, token: string, body?: unknown, method = 
   }
 
   return payload;
+}
+
+async function refreshBackendTokens(): Promise<string | null> {
+  const storedRefresh = await getStoredRefreshToken();
+
+  if (!storedRefresh) {
+    return null;
+  }
+
+  try {
+    const refreshResponse = await fetch(`${appConfig.backendBaseUrl}/auth/refresh`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ refreshToken: storedRefresh })
+    });
+
+    if (!refreshResponse.ok) {
+      await clearTokens();
+      return null;
+    }
+
+    const refreshPayload = (await refreshResponse.json()) as ApiSuccess<{ accessToken: string; refreshToken: string }> | ApiError;
+
+    if (refreshPayload.status === true && refreshPayload.details) {
+      const { accessToken: newAccess, refreshToken: newRefresh } = refreshPayload.details;
+      await storeTokens(newAccess, newRefresh);
+      return newAccess;
+    }
+  } catch {
+    // Fall through and clear stored credentials below.
+  }
+
+  await clearTokens();
+  return null;
 }
 
 export async function syncUser(user: User): Promise<SyncUserResponse> {
@@ -437,11 +447,11 @@ export async function sendScenarioVoice(
   input: {
     audioUri: string;
     mimeType?: string;
-    fileName?: string;
-    referenceText?: string;
+  fileName?: string;
+  referenceText?: string;
   }
 ): Promise<ScenarioVoiceResponse> {
-  const token = await user.getIdToken();
+  const token = (await getStoredAccessToken()) || (await user.getIdToken());
   const formData = new FormData();
   formData.append("audio", {
     uri: input.audioUri,
@@ -469,7 +479,49 @@ export async function sendScenarioVoice(
     body: formData
   });
 
-  const payload = (await response.json()) as ApiSuccess<ScenarioVoiceResponse> | ApiError;
+  let payload = (await response.json()) as ApiSuccess<ScenarioVoiceResponse> | ApiError;
+
+  if (
+    response.status === 401 &&
+    payload.status === false &&
+    payload.details &&
+    typeof payload.details === "object" &&
+    "code" in payload.details &&
+    String(payload.details.code || "") !== "MISSING_BEARER_TOKEN" &&
+    String(payload.details.code || "") !== "EMPTY_BEARER_TOKEN"
+  ) {
+    const refreshedToken = await refreshBackendTokens();
+
+    if (refreshedToken) {
+      const retryResponse = await fetch(`${appConfig.backendBaseUrl}/scenarios/sessions/${sessionId}/voice`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${refreshedToken}`
+        },
+        body: formData
+      });
+
+      payload = (await retryResponse.json()) as ApiSuccess<ScenarioVoiceResponse> | ApiError;
+
+      if (!retryResponse.ok || payload.status !== true) {
+        const code = !payload.status && payload.details && typeof payload.details === "object" && "code" in payload.details
+          ? String(payload.details.code || "")
+          : "";
+        const cause = !payload.status && payload.details && typeof payload.details === "object" && "cause" in payload.details
+          ? payload.details.cause
+          : null;
+        const causeText = typeof cause === "string" && cause.trim() ? `: ${cause.trim()}` : "";
+        const codeText = code ? ` [${code}]` : "";
+        throw new Error(`${payload.message || "Backend request failed."}${codeText}${causeText}`);
+      }
+
+      if (!payload.details) {
+        throw new Error("Scenario voice response was not returned by the backend.");
+      }
+
+      return payload.details;
+    }
+  }
 
   if (!response.ok || payload.status !== true) {
     const code = !payload.status && payload.details && typeof payload.details === "object" && "code" in payload.details

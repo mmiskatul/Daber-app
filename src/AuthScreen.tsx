@@ -4,6 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { User } from "firebase/auth";
 import { colors, radii, spacing } from "./theme";
 import {
+  canUseAppleSignIn,
   loginWithApple,
   loginWithEmail,
   loginWithGoogle,
@@ -24,6 +25,7 @@ export function AuthScreen({ onAuthenticated, onBack }: Props) {
   const [password, setPassword] = React.useState("");
   const [busy, setBusy] = React.useState<string | null>(null);
   const [error, setError] = React.useState("");
+  const showAppleSignIn = canUseAppleSignIn();
 
   async function run(name: string, action: () => Promise<User>) {
     setError("");
@@ -61,13 +63,17 @@ export function AuthScreen({ onAuthenticated, onBack }: Props) {
         <View style={styles.spacer} />
 
         <View style={styles.actions}>
-          <Pressable
-            disabled={busy !== null}
-            style={[styles.primaryButton, busy ? styles.disabled : null]}
-            onPress={() => run("apple", loginWithApple)}
-          >
-            <Text style={styles.primaryButtonText}>{busy === "apple" ? "Connecting..." : "Continue with Apple"}</Text>
-          </Pressable>
+          {showAppleSignIn ? (
+            <Pressable
+              disabled={busy !== null}
+              style={[styles.primaryButton, busy ? styles.disabled : null]}
+              onPress={() => run("apple", loginWithApple)}
+            >
+              <Text style={styles.primaryButtonText}>
+                {busy === "apple" ? "Connecting..." : "Continue with Apple"}
+              </Text>
+            </Pressable>
+          ) : null}
 
           <Pressable
             disabled={busy !== null}

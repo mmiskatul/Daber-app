@@ -7,6 +7,7 @@ import {
   signInWithPopup,
 } from "firebase/auth";
 import { Platform } from "react-native";
+import Constants from "expo-constants";
 import {
   GoogleSignin,
   isCancelledResponse,
@@ -17,6 +18,10 @@ import { syncUser } from "./api";
 import { appConfig } from "./config";
 
 let googleConfigured = false;
+
+export function canUseAppleSignIn(): boolean {
+  return Platform.OS === "ios" && Constants.executionEnvironment !== "storeClient";
+}
 
 function configureGoogleSignIn(): void {
   if (googleConfigured || Platform.OS === "web") {
