@@ -53,10 +53,22 @@ function getDefaultBackendBaseUrl(): string {
   return "http://localhost:4000";
 }
 
+function getDefaultVoiceGatewayBaseUrl(backendBaseUrl: string): string {
+  const envUrl = process.env.EXPO_PUBLIC_VOICE_GATEWAY_BASE_URL;
+
+  if (envUrl) {
+    return envUrl;
+  }
+
+  return backendBaseUrl;
+}
+
+const backendBaseUrl = getDefaultBackendBaseUrl();
+
 export const appConfig = {
-  backendBaseUrl: getDefaultBackendBaseUrl(),
+  backendBaseUrl,
   voiceRtcEnabled: process.env.EXPO_PUBLIC_VOICE_RTC_ENABLED === "true",
-  voiceGatewayBaseUrl: process.env.EXPO_PUBLIC_VOICE_GATEWAY_BASE_URL || "",
+  voiceGatewayBaseUrl: getDefaultVoiceGatewayBaseUrl(backendBaseUrl),
   firebase: {
     apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "",
     authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || "",

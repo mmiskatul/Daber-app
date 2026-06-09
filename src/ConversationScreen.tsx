@@ -38,6 +38,8 @@ import {
 } from "./api";
 import { firestore } from "./firebase";
 import { colors, radii } from "./theme";
+import { isVoiceRtcEnabled } from "./voice/voiceFeatureFlags";
+import { useVoiceRtcSession } from "./voice/useVoiceRtcSession";
 
 type Props = {
   user: User;
@@ -202,6 +204,7 @@ function prioritizePronunciationIssues<T extends { label: string; severity?: "lo
 }
 
 export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }: Props) {
+  const voiceRtcFeatureEnabled = isVoiceRtcEnabled();
   const [session, setSession] = React.useState<ScenarioSessionResponse | null>(null);
   const [turns, setTurns] = React.useState<LocalScenarioTurn[]>([]);
   const [inputMode, setInputMode] = React.useState<"voice" | "text">("voice");
@@ -240,6 +243,16 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const tutorPlayerRef = React.useRef(createAudioPlayer());
   const tutorPlayerStatus = useAudioPlayerStatus(tutorPlayerRef.current);
   const supportLanguage = getSupportLanguageConfig(selectedSupportNative);
+  const rtcBootstrapAttemptedRef = React.useRef<string | null>(null);
+  const {
+    state: voiceRtcState,
+    session: voiceRtcSession,
+    connect: connectVoiceRtc,
+    disconnect: disconnectVoiceRtc
+  } = useVoiceRtcSession({
+    user,
+    scenarioSessionId: sessionId
+  });
 
   const clearVoiceStopTimer = React.useCallback(() => {
     if (voiceStopTimerRef.current) {
@@ -250,6 +263,27 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
   const getTranslationCacheKey = React.useCallback((text: string, native: string) => `${native}::${text}`, []);
   const getSpeechCacheKey = React.useCallback((text: string) => text.trim(), []);
+  const voiceTransportLabel = voiceRtcFeatureEnabled ? "RTC scaffold" : "Upload voice";
+
+  const ensureVoiceRtcSession = React.useCallback(async () => {
+    if (!voiceRtcFeatureEnabled) {
+      return false;
+    }
+
+    if (voiceRtcSession) {
+      return true;
+    }
+
+    try {
+      await connectVoiceRtc({
+        referenceText: textValue.trim() || undefined
+      });
+      return true;
+    } catch {
+      setError("RTC voice setup failed. Falling back to upload voice.");
+      return false;
+    }
+  }, [connectVoiceRtc, textValue, voiceRtcFeatureEnabled, voiceRtcSession]);
 
   const getResolvedTurnTranslation = React.useCallback(
     (turn: Pick<ScenarioTurn, "text" | "translation">) => {
@@ -451,6 +485,33 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       tutorPlayerRef.current.remove();
     };
   }, [clearVoiceStopTimer]);
+
+  React.useEffect(() => {
+    rtcBootstrapAttemptedRef.current = null;
+  }, [sessionId]);
+
+  React.useEffect(() => {
+    if (!voiceRtcFeatureEnabled || !session || inputMode !== "voice") {
+      return;
+    }
+
+    if (voiceRtcSession || voiceRtcState === "connecting" || voiceRtcState === "reconnecting") {
+      return;
+    }
+
+    if (rtcBootstrapAttemptedRef.current === sessionId) {
+      return;
+    }
+
+    rtcBootstrapAttemptedRef.current = sessionId;
+    void ensureVoiceRtcSession();
+  }, [ensureVoiceRtcSession, inputMode, session, sessionId, voiceRtcFeatureEnabled, voiceRtcSession, voiceRtcState]);
+
+  React.useEffect(() => {
+    return () => {
+      void disconnectVoiceRtc().catch(() => undefined);
+    };
+  }, [disconnectVoiceRtc]);
 
   React.useEffect(() => {
     let active = true;
@@ -770,6 +831,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     setError("");
 
     try {
+      await ensureVoiceRtcSession();
       setVoiceDraft(null);
       clearVoiceStopTimer();
       await audioRecorder.prepareToRecordAsync();
@@ -1410,6 +1472,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
             </View>
             <Text style={styles.voiceDraftText}>
               Press and hold to talk. Release to send. Tutor replies speak in Hebrew only.
+            </Text>
+            <Text style={styles.voiceTransportMeta}>
+              {voiceTransportLabel}
+              {voiceRtcFeatureEnabled ? `: ${voiceRtcState}${voiceRtcSession ? " connected" : ""}` : ": active"}
             </Text>
           </View>
         )}
@@ -3218,6 +3284,13 @@ const styles = StyleSheet.create({
     flex: 1,
     color: colors.inkMute,
     fontSize: 12.5
+  },
+  voiceTransportMeta: {
+    marginTop: 6,
+    color: colors.inkFaint,
+    fontSize: 11,
+    textAlign: "center",
+    letterSpacing: 0.5
   },
   voiceDraftSendButton: {
     minHeight: 38,
