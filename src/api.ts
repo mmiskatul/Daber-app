@@ -193,6 +193,50 @@ export type ScenarioTranslationResponse = {
   liveModelCall: boolean;
 };
 
+export type VoiceTransport = "upload" | "webrtc";
+
+export type VoiceRtcState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "listening"
+  | "processing"
+  | "assistantSpeaking"
+  | "reconnecting"
+  | "failed";
+
+export type VoiceRtcSessionResponse = {
+  voiceSessionId: string;
+  gatewayUrl: string;
+  gatewayNodeId: string;
+  answerSdp: string;
+  iceServers: Array<{
+    urls: string | string[];
+    username?: string;
+    credential?: string;
+  }>;
+  transport: "webrtc";
+  scenarioSessionId: string;
+  tutorVoice: string;
+  expiresAt: string;
+};
+
+export type VoiceRealtimeEvent =
+  | { type: "voice.session.ready"; voiceSessionId: string }
+  | { type: "voice.session.state"; state: Exclude<VoiceRtcState, "idle" | "connected" | "reconnecting" | "failed">; voiceSessionId: string }
+  | { type: "voice.input.speech_started"; utteranceId: string; startedAt: string }
+  | { type: "voice.input.speech_stopped"; utteranceId: string; stoppedAt: string }
+  | { type: "voice.learner.transcript.partial"; utteranceId: string; text: string }
+  | { type: "voice.learner.transcript.final"; utteranceId: string; text: string }
+  | { type: "voice.tutor.pending"; utteranceId: string; tutorName: string }
+  | { type: "voice.tutor.text.partial"; utteranceId: string; textDelta: string }
+  | { type: "voice.tutor.turn.final"; utteranceId: string; tutorTurn: ScenarioTurn }
+  | { type: "voice.pronunciation.pending"; utteranceId: string; learnerTurnLocalId: string }
+  | { type: "voice.pronunciation.final"; utteranceId: string; learnerTurnLocalId: string; pronunciation: NonNullable<ScenarioTurn["pronunciation"]> }
+  | { type: "voice.output.audio.started"; utteranceId: string }
+  | { type: "voice.output.audio.stopped"; utteranceId: string }
+  | { type: "voice.error"; code: string; message: string; retryable: boolean };
+
 const ACCESS_TOKEN_KEY = "daber_access_token";
 const REFRESH_TOKEN_KEY = "daber_refresh_token";
 
@@ -578,6 +622,50 @@ export async function respondScenarioVoice(
   }
 
   return response.details;
+}
+
+export async function createVoiceRtcSession(
+  user: User,
+  input: {
+    scenarioSessionId: string;
+    offerSdp: string;
+    referenceText?: string;
+  }
+): Promise<VoiceRtcSessionResponse> {
+  const token = await user.getIdToken();
+  const response = await request<VoiceRtcSessionResponse>("/voice/rtc/session", token, input);
+
+  if (!response.details) {
+    throw new Error("RTC voice session response was not returned by the backend.");
+  }
+
+  return response.details;
+}
+
+export async function reconnectVoiceRtcSession(
+  user: User,
+  input: {
+    voiceSessionId: string;
+    offerSdp: string;
+  }
+): Promise<VoiceRtcSessionResponse> {
+  const token = await user.getIdToken();
+  const response = await request<VoiceRtcSessionResponse>(
+    `/voice/rtc/session/${input.voiceSessionId}/reconnect`,
+    token,
+    { offerSdp: input.offerSdp }
+  );
+
+  if (!response.details) {
+    throw new Error("RTC voice reconnect response was not returned by the backend.");
+  }
+
+  return response.details;
+}
+
+export async function closeVoiceRtcSession(user: User, voiceSessionId: string): Promise<void> {
+  const token = await user.getIdToken();
+  await request<{ voiceSessionId: string }>(`/voice/rtc/session/${voiceSessionId}`, token, undefined, "DELETE");
 }
 
 export async function getOnboarding(user: User): Promise<OnboardingPayload | null> {

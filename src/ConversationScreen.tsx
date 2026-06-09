@@ -17,6 +17,7 @@ import {
   requestRecordingPermissionsAsync,
   setIsAudioActiveAsync,
   setAudioModeAsync,
+  useAudioPlayerStatus,
   useAudioRecorder,
   useAudioRecorderState
 } from "expo-audio";
@@ -223,6 +224,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [translationCache, setTranslationCache] = React.useState<Record<string, string>>({});
   const [translationStatus, setTranslationStatus] = React.useState<Record<string, TranslationStatus>>({});
   const [speechCache, setSpeechCache] = React.useState<Record<string, ScenarioSpeechResponse>>({});
+  const [isFallbackTutorSpeaking, setIsFallbackTutorSpeaking] = React.useState(false);
   const [requestMetrics, setRequestMetrics] = React.useState<RequestMetrics>({
     lastResponseMs: null,
     lastInputMode: null
@@ -236,6 +238,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
   const tutorPlayerRef = React.useRef(createAudioPlayer());
+  const tutorPlayerStatus = useAudioPlayerStatus(tutorPlayerRef.current);
   const supportLanguage = getSupportLanguageConfig(selectedSupportNative);
 
   const clearVoiceStopTimer = React.useCallback(() => {
@@ -358,6 +361,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const playTutorAudio = React.useCallback(async (speech: ScenarioSpeechResponse) => {
     const player = tutorPlayerRef.current;
     const dataUri = `data:${speech.mimeType};base64,${speech.audioBase64}`;
+    setIsFallbackTutorSpeaking(false);
     player.pause();
     player.replace({ uri: dataUri });
     player.play();
@@ -379,19 +383,23 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         await playTutorAudio(speech);
       } catch {
         Speech.stop();
+        setIsFallbackTutorSpeaking(true);
         Speech.speak(cleanReply, {
           language: "he-IL",
           pitch: 1.0,
           rate: 0.92,
+          onStopped: () => setIsFallbackTutorSpeaking(false),
+          onError: () => setIsFallbackTutorSpeaking(false),
           onDone: cleanTranslation
             ? () => {
+                setIsFallbackTutorSpeaking(false);
                 Speech.speak(cleanTranslation, {
                   language: supportLanguage.speechLanguage,
                   pitch: 1.0,
                   rate: 0.95
                 });
               }
-            : undefined
+            : () => setIsFallbackTutorSpeaking(false)
         });
       }
     },
@@ -714,9 +722,12 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       : null;
   const flaggedIssueCount = learnerVoiceTurns.reduce((sum, turn) => sum + (turn.pronunciation.issues?.length || 0), 0);
   const sceneSummary = session?.variation?.situation || session?.theme?.blurb || "";
+  const avatarSpeakingActive = tutorPlayerStatus.playing || isFallbackTutorSpeaking;
+  const avatarListeningActive = recorderState.isRecording;
 
   React.useEffect(() => {
     return () => {
+      setIsFallbackTutorSpeaking(false);
       Speech.stop();
     };
   }, []);
@@ -1064,7 +1075,12 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       {/* Expanded Avatar */}
       {!minimized ? (
         <View style={styles.avatarWrap}>
-          <AvatarWindow mode={mode} voiceName={session?.tutorVoice?.name || "Dana"} onMinimize={() => setMinimized(true)} />
+          <AvatarWindow
+            voiceName={session?.tutorVoice?.name || "Dana"}
+            speakingActive={avatarSpeakingActive}
+            listeningActive={avatarListeningActive}
+            onMinimize={() => setMinimized(true)}
+          />
         </View>
       ) : null}
 
@@ -1162,8 +1178,8 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
           <Pressable style={styles.sheetBackdrop} onPress={() => setShowCorrectionSheet(false)} />
           <View style={styles.sheetCard}>
             <View style={styles.sheetGrabber} />
-            <Text style={styles.sheetEyebrow}>PRONUNCIATION</Text>
-            <Text style={styles.sheetTitle}>Pronunciation detail</Text>
+            <Text style={styles.sheetEyebrow}>SPEAK BETTER</Text>
+            <Text style={styles.sheetTitle}>How to say it more clearly</Text>
 
             {activePronunciation ? (
               <>
@@ -1173,6 +1189,19 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
                   <Text style={styles.pronunciationScorePill}>Fluency {activePronunciation.fluencyScore}</Text>
                 </View>
                 <Text style={styles.correctionDesc}>{activePronunciation.feedback || "Keep practicing this phrase more clearly."}</Text>
+                {activePronunciation.issues?.length ? (
+                  <View style={styles.issueDetailStack}>
+                    {prioritizePronunciationIssues(activePronunciation.issues).map((issue, issueIndex) => (
+                      <View key={`${issue.label}-${issueIndex}`} style={styles.issueDetailCard}>
+                        <Text style={styles.issueDetailTitle}>{getFriendlyIssueTitle(issue.label)}</Text>
+                        <Text style={styles.issueDetailBody}>Heard like: {issue.heardApproximation || "unclear"}</Text>
+                        <Text style={styles.issueDetailBody}>Try this sound: {issue.expectedSound || "not provided"}</Text>
+                        <Text style={styles.issueDetailBody}>Practice word: {issue.affectedWord || "not provided"}</Text>
+                        <Text style={styles.issueDetailBody}>{issue.hint}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
               </>
             ) : (
               <Text style={styles.correctionDesc}>No pronunciation issue details were returned for this turn.</Text>
@@ -1180,10 +1209,10 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
 
             <View style={styles.correctionActions}>
               <Pressable style={styles.correctionBtnGhost} onPress={() => setShowCorrectionSheet(false)}>
-                <Text style={styles.correctionBtnGhostText}>Skip</Text>
+                <Text style={styles.correctionBtnGhostText}>Later</Text>
               </Pressable>
               <Pressable style={styles.correctionBtnTerra} onPress={() => setShowCorrectionSheet(false)}>
-                <View style={styles.correctionBtnTerraInner}><MicGlyph tone="bone" /><Text style={styles.correctionBtnTerraText}>Practice it</Text></View>
+                <View style={styles.correctionBtnTerraInner}><MicGlyph tone="bone" /><Text style={styles.correctionBtnTerraText}>Try again</Text></View>
               </Pressable>
             </View>
           </View>
@@ -1389,34 +1418,241 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   );
 }
 
-function AvatarWindow({ mode, voiceName, onMinimize }: { mode: Mode; voiceName: string; onMinimize: () => void }) {
+function AvatarWindow({
+  voiceName,
+  speakingActive,
+  listeningActive,
+  onMinimize
+}: {
+  voiceName: string;
+  speakingActive: boolean;
+  listeningActive: boolean;
+  onMinimize: () => void;
+}) {
   const breathingAnim = React.useRef(new Animated.Value(0)).current;
+  const mouthAnim = React.useRef(new Animated.Value(0.12)).current;
+  const auraAnim = React.useRef(new Animated.Value(0.12)).current;
+  const eyeOpenAnim = React.useRef(new Animated.Value(1)).current;
+  const browAnim = React.useRef(new Animated.Value(0)).current;
+  const leanAnim = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
-    Animated.loop(
+    const blinkLoop = Animated.loop(
       Animated.sequence([
-        Animated.timing(breathingAnim, {
-          toValue: -3,
-          duration: 1200,
-          useNativeDriver: true
+        Animated.delay(1800),
+        Animated.timing(eyeOpenAnim, {
+          toValue: 0.2,
+          duration: 90,
+          useNativeDriver: false
         }),
-        Animated.timing(breathingAnim, {
-          toValue: 0,
-          duration: 1200,
-          useNativeDriver: true
+        Animated.timing(eyeOpenAnim, {
+          toValue: 1,
+          duration: 120,
+          useNativeDriver: false
         })
       ])
-    ).start();
-  }, [breathingAnim]);
+    );
 
-  const breathing = mode === "speaking";
+    blinkLoop.start();
+
+    return () => {
+      blinkLoop.stop();
+    };
+  }, [eyeOpenAnim]);
+
+  React.useEffect(() => {
+    let loop: Animated.CompositeAnimation;
+
+    if (speakingActive) {
+      loop = Animated.loop(
+        Animated.parallel([
+          Animated.sequence([
+            Animated.timing(breathingAnim, {
+              toValue: -6,
+              duration: 280,
+              useNativeDriver: false
+            }),
+            Animated.timing(breathingAnim, {
+              toValue: 1,
+              duration: 220,
+              useNativeDriver: false
+            })
+          ]),
+          Animated.sequence([
+            Animated.timing(mouthAnim, {
+              toValue: 1,
+              duration: 130,
+              useNativeDriver: false
+            }),
+            Animated.timing(mouthAnim, {
+              toValue: 0.22,
+              duration: 110,
+              useNativeDriver: false
+            }),
+            Animated.timing(mouthAnim, {
+              toValue: 0.82,
+              duration: 140,
+              useNativeDriver: false
+            }),
+            Animated.timing(mouthAnim, {
+              toValue: 0.12,
+              duration: 120,
+              useNativeDriver: false
+            })
+          ]),
+          Animated.sequence([
+            Animated.timing(auraAnim, {
+              toValue: 0.42,
+              duration: 300,
+              useNativeDriver: false
+            }),
+            Animated.timing(auraAnim, {
+              toValue: 0.18,
+              duration: 300,
+              useNativeDriver: false
+            })
+          ])
+        ])
+      );
+      Animated.timing(browAnim, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: false
+      }).start();
+      Animated.timing(leanAnim, {
+        toValue: 0.08,
+        duration: 220,
+        useNativeDriver: false
+      }).start();
+    } else if (listeningActive) {
+      loop = Animated.loop(
+        Animated.parallel([
+          Animated.sequence([
+            Animated.timing(breathingAnim, {
+              toValue: -2,
+              duration: 900,
+              useNativeDriver: false
+            }),
+            Animated.timing(breathingAnim, {
+              toValue: 0,
+              duration: 900,
+              useNativeDriver: false
+            })
+          ]),
+          Animated.sequence([
+            Animated.timing(auraAnim, {
+              toValue: 0.28,
+              duration: 650,
+              useNativeDriver: false
+            }),
+            Animated.timing(auraAnim, {
+              toValue: 0.14,
+              duration: 650,
+              useNativeDriver: false
+            })
+          ])
+        ])
+      );
+      Animated.timing(mouthAnim, {
+        toValue: 0.08,
+        duration: 180,
+        useNativeDriver: false
+      }).start();
+      Animated.timing(browAnim, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: false
+      }).start();
+      Animated.sequence([
+        Animated.timing(leanAnim, {
+          toValue: 1,
+          duration: 180,
+          useNativeDriver: false
+        }),
+        Animated.timing(leanAnim, {
+          toValue: 0.9,
+          duration: 120,
+          useNativeDriver: false
+        })
+      ]).start();
+    } else {
+      loop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(breathingAnim, {
+            toValue: -2,
+            duration: 1200,
+            useNativeDriver: false
+          }),
+          Animated.timing(breathingAnim, {
+            toValue: 0,
+            duration: 1200,
+            useNativeDriver: false
+          })
+        ])
+      );
+      Animated.timing(mouthAnim, {
+        toValue: 0.1,
+        duration: 220,
+        useNativeDriver: false
+      }).start();
+      Animated.timing(auraAnim, {
+        toValue: 0.12,
+        duration: 220,
+        useNativeDriver: false
+      }).start();
+      Animated.timing(browAnim, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: false
+      }).start();
+      Animated.timing(leanAnim, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: false
+      }).start();
+    }
+
+    loop.start();
+
+    return () => {
+      loop.stop();
+    };
+  }, [auraAnim, breathingAnim, browAnim, leanAnim, listeningActive, mouthAnim, speakingActive]);
+
+  const mouthHeight = mouthAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [6, 20]
+  });
+  const mouthWidth = mouthAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [26, 38]
+  });
+  const eyeHeight = eyeOpenAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [2, 12]
+  });
+  const browLift = browAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -4]
+  });
+  const headScale = leanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.07]
+  });
+  const headForwardY = leanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 8]
+  });
+  const shoulderScale = leanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.05]
+  });
 
   return (
     <View style={styles.avatarCard}>
-      {/* Scene Backdrop */}
       <View style={styles.avatarBackdrop} />
-      
-      {/* High-fidelity Window Pane Grid Layouts */}
+      <Animated.View style={[styles.avatarAura, { opacity: auraAnim }]} />
+
       <View style={styles.windowGridLeft}>
         <View style={styles.gridLineHorizontal} />
         <View style={styles.gridLineHorizontal2} />
@@ -1429,34 +1665,38 @@ function AvatarWindow({ mode, voiceName, onMinimize }: { mode: Mode; voiceName: 
         <View style={styles.gridLineVertical} />
         <View style={styles.gridLineVertical2} />
       </View>
-      
-      {/* Teacher Silhouette */}
+
       <View style={styles.silhouetteContainer}>
-        {/* Shoulders */}
-        <View style={styles.shoulders} />
-        {/* Neck */}
+        <Animated.View style={[styles.shoulders, { transform: [{ scale: shoulderScale }, { translateY: headForwardY }] }]} />
         <View style={styles.neck} />
-        {/* Head with Breathing Animation */}
         <Animated.View
           style={[
             styles.head,
             {
-              transform: [{ translateY: breathing ? breathingAnim : 0 }]
+              transform: [{ translateY: Animated.add(breathingAnim, headForwardY) }, { scale: headScale }]
             }
           ]}
         >
-          {/* Hair Cap */}
           <View style={styles.hairCap} />
+          <View style={styles.facePlane}>
+            <View style={styles.browRow}>
+              <Animated.View style={[styles.brow, { transform: [{ translateY: browLift }, { rotate: "-6deg" }] }]} />
+              <Animated.View style={[styles.brow, { transform: [{ translateY: browLift }, { rotate: "6deg" }] }]} />
+            </View>
+            <View style={styles.eyeRow}>
+              <Animated.View style={[styles.eye, { height: eyeHeight }]}>
+                <View style={styles.pupil} />
+              </Animated.View>
+              <Animated.View style={[styles.eye, { height: eyeHeight }]}>
+                <View style={styles.pupil} />
+              </Animated.View>
+            </View>
+            <View style={styles.nose} />
+            <Animated.View style={[styles.mouth, { height: mouthHeight, width: mouthWidth }]} />
+          </View>
         </Animated.View>
       </View>
 
-      {/* Dotted Drop Image Placeholder Box */}
-      <View style={styles.dropBox}>
-        <Text style={styles.dropBoxIcon}>🖼</Text>
-        <Text style={styles.dropBoxText}>Drop an image</Text>
-      </View>
-
-      {/* Top Left: Expand/Minimize Corner Vector Icon */}
       <Pressable onPress={onMinimize} style={styles.avatarTopLeft}>
         <View style={styles.expandMinimizeIcon}>
           <View style={[styles.cornerLineH, { left: 0, top: 0 }]} />
@@ -1470,22 +1710,20 @@ function AvatarWindow({ mode, voiceName, onMinimize }: { mode: Mode; voiceName: 
         </View>
       </Pressable>
 
-      {/* Top Right: Status Pill */}
       <View style={styles.avatarTopRight}>
         <View
           style={[
             styles.avatarStatusDot,
-            mode === "speaking"
+            speakingActive
               ? styles.avatarStatusSpeaking
-              : mode === "listening"
-              ? styles.avatarStatusListening
-              : null
+              : listeningActive
+                ? styles.avatarStatusListening
+                : null
           ]}
         />
-        <Text style={styles.avatarStatusText}>{mode.toUpperCase()}</Text>
+        <Text style={styles.avatarStatusText}>{voiceName.toUpperCase()}</Text>
       </View>
 
-      {/* Bottom Controls - Custom Audio & Camera Vector Buttons */}
       <View style={styles.avatarBottomRight}>
         <Pressable style={styles.avatarSmallControl}>
           <View style={styles.speakerVector}>
@@ -1574,15 +1812,9 @@ function MessageBubble({
             <Text style={styles.pendingTutorText}>{tutorName} is responding in Hebrew…</Text>
           </View>
         ) : isLearner && turn.inputMode === "voice" ? (
-          <View style={styles.voiceNoteRow}>
-            <View style={styles.voiceNotePill}>
-              <Text style={styles.voiceNotePillText}>Voice</Text>
-            </View>
-            <View style={styles.voiceNoteCopy}>
-              <Text style={styles.voiceNoteText}>{translation || text || "Voice note sent"}</Text>
-              {translation && text ? <Text style={styles.voiceNoteOriginal}>{text}</Text> : null}
-            </View>
-          </View>
+          <Text style={[styles.messageText, styles.messageTextLearner]}>
+            {text || "…"}
+          </Text>
         ) : (
           <Text style={[styles.messageText, isLearner ? styles.messageTextLearner : styles.messageTextTutor]}>
             {text}
@@ -1640,18 +1872,11 @@ function MessageBubble({
             onPress={onSeeMore}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             style={({ pressed }) => [
-              styles.pronunciationInlineBanner,
+              styles.pronunciationInlineButton,
               pressed ? { opacity: 0.8 } : null
             ]}
           >
-            <View style={styles.issueDotPill}>
-              <View style={styles.goldDot} />
-              <Text style={styles.issuePillText}>{issue.label}</Text>
-            </View>
-            <Text style={styles.issueBannerDesc}>
-              heard as {issue.heardApproximation} · should sound like {issue.expectedSound}
-            </Text>
-            <Text style={styles.issueBannerDesc}>{issue.hint}</Text>
+            <Text style={styles.pronunciationInlineButtonText}>{getFriendlyIssueTitle(issue.label)}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -1666,6 +1891,28 @@ function InsightStat({ label, value }: { label: string; value: string }) {
       <Text style={styles.insightStatLabel}>{label}</Text>
     </View>
   );
+}
+
+function getFriendlyIssueTitle(label: string): string {
+  const normalized = label.trim().toUpperCase();
+
+  if (normalized === "TZADI") {
+    return "Tz sound";
+  }
+
+  if (normalized === "RESH") {
+    return "R sound";
+  }
+
+  if (normalized === "AYIN") {
+    return "Ayin sound";
+  }
+
+  if (normalized === "HET" || normalized === "CHET") {
+    return "Kh sound";
+  }
+
+  return `${label.trim()} sound`;
 }
 
 function SpeakerGlyph({
@@ -1910,6 +2157,16 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#D9A35E"
   },
+  avatarAura: {
+    position: "absolute",
+    left: "50%",
+    top: "18%",
+    marginLeft: -96,
+    width: 192,
+    height: 192,
+    borderRadius: 999,
+    backgroundColor: "rgba(244,236,222,0.55)"
+  },
   windowGridLeft: {
     position: "absolute",
     left: "8%",
@@ -2003,29 +2260,61 @@ const styles = StyleSheet.create({
     borderRadius: 60,
     backgroundColor: "#2A1A0F"
   },
-  dropBox: {
+  facePlane: {
     position: "absolute",
-    top: "10%",
-    left: "10%",
-    right: "10%",
-    height: 120,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "rgba(26,20,16,0.25)",
-    borderStyle: "dashed",
+    left: 18,
+    right: 18,
+    top: 42,
+    bottom: 18,
+    alignItems: "center",
+    justifyContent: "flex-start"
+  },
+  browRow: {
+    marginTop: 18,
+    width: 62,
+    flexDirection: "row",
+    justifyContent: "space-between"
+  },
+  brow: {
+    width: 20,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: "#2A1A0F"
+  },
+  eyeRow: {
+    marginTop: 10,
+    width: 54,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center"
+  },
+  eye: {
+    width: 16,
+    borderRadius: 8,
+    backgroundColor: colors.bone,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "transparent"
+    overflow: "hidden"
   },
-  dropBoxIcon: {
-    fontSize: 24,
-    opacity: 0.6,
-    marginBottom: 4
+  pupil: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#2A1A0F"
   },
-  dropBoxText: {
-    color: "rgba(26,20,16,0.45)",
-    fontSize: 13,
-    fontWeight: "500"
+  nose: {
+    marginTop: 10,
+    width: 6,
+    height: 16,
+    borderRadius: 3,
+    backgroundColor: "rgba(111,65,40,0.55)"
+  },
+  mouth: {
+    marginTop: 12,
+    borderRadius: 999,
+    backgroundColor: "#7A2B1E",
+    borderWidth: 2,
+    borderColor: "rgba(244,236,222,0.15)"
   },
   avatarTopLeft: {
     position: "absolute",
@@ -2087,7 +2376,7 @@ const styles = StyleSheet.create({
   avatarBottomRight: {
     position: "absolute",
     right: 10,
-    bottom: 10,
+    bottom: 68,
     flexDirection: "row",
     gap: 8
   },
@@ -2443,39 +2732,6 @@ const styles = StyleSheet.create({
   messageTextLearner: {
     color: colors.bone
   },
-  voiceNoteRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 10,
-    minHeight: 28
-  },
-  voiceNoteCopy: {
-    flex: 1,
-    gap: 4
-  },
-  voiceNotePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    backgroundColor: "rgba(255,255,255,0.16)"
-  },
-  voiceNotePillText: {
-    color: colors.bone,
-    fontSize: 10,
-    letterSpacing: 1,
-    textTransform: "uppercase"
-  },
-  voiceNoteText: {
-    color: colors.bone,
-    fontSize: 14,
-    fontStyle: "italic"
-  },
-  voiceNoteOriginal: {
-    color: "rgba(244,236,222,0.72)",
-    fontSize: 12,
-    lineHeight: 16,
-    writingDirection: "rtl"
-  },
   pendingTutorRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2555,42 +2811,23 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bone,
     marginLeft: 1.5
   },
-  pronunciationInlineBanner: {
+  pronunciationInlineButton: {
     marginTop: 10,
-    flexDirection: "row",
+    alignSelf: "flex-start",
+    minHeight: 32,
+    paddingHorizontal: 12,
+    borderRadius: radii.pill,
+    backgroundColor: "rgba(26,20,16,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(244,236,222,0.18)",
     alignItems: "center",
-    flexWrap: "wrap",
-    backgroundColor: "rgba(26,20,16,0.15)",
-    paddingVertical: 5,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    gap: 6,
-    alignSelf: "flex-start"
+    justifyContent: "center"
   },
-  issueDotPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "rgba(244,236,222,0.12)",
-    paddingVertical: 2,
-    paddingHorizontal: 6,
-    borderRadius: 999,
-    gap: 4
-  },
-  goldDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 999,
-    backgroundColor: colors.gold
-  },
-  issuePillText: {
+  pronunciationInlineButtonText: {
     color: colors.gold,
-    fontSize: 9,
-    fontWeight: "700",
-    letterSpacing: 0.5
-  },
-  issueBannerDesc: {
     fontSize: 11,
-    color: "rgba(244,236,222,0.9)"
+    fontWeight: "700",
+    letterSpacing: 0.8
   },
   errorBox: {
     backgroundColor: colors.dangerBg,
