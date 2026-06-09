@@ -11,3 +11,11 @@ export function createSilentAudioLevelSnapshot(): AudioLevelSnapshot {
     updatedAt: new Date().toISOString()
   };
 }
+
+export function createAvatarAudioLevelSnapshot(inputLevel: number, outputLevel: number): AudioLevelSnapshot {
+  return {
+    inputLevel: Math.max(0, Math.min(1, inputLevel)),
+    outputLevel: Math.max(0, Math.min(1, outputLevel)),
+    updatedAt: new Date().toISOString()
+  };
+}
