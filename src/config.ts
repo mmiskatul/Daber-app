@@ -55,6 +55,8 @@ function getDefaultBackendBaseUrl(): string {
 
 export const appConfig = {
   backendBaseUrl: getDefaultBackendBaseUrl(),
+  voiceRtcEnabled: process.env.EXPO_PUBLIC_VOICE_RTC_ENABLED === "true",
+  voiceGatewayBaseUrl: process.env.EXPO_PUBLIC_VOICE_GATEWAY_BASE_URL || "",
   firebase: {
     apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY || "",
     authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || "",
