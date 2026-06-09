@@ -16,6 +16,23 @@ It includes:
 1. Copy `.env.example` to `.env`
 2. Fill in your Firebase web config
 3. Add Google OAuth client IDs if you want Google sign-in
+4. For local RTC testing, set:
+
+```env
+EXPO_PUBLIC_VOICE_RTC_ENABLED=true
+```
+
+Leave `EXPO_PUBLIC_BACKEND_BASE_URL` empty if you want the app to use its built-in local defaults:
+
+- Android emulator: `http://10.0.2.2:4000`
+- iOS simulator / same-host web: `http://localhost:4000`
+
+If your backend is running on another machine, set both:
+
+```env
+EXPO_PUBLIC_BACKEND_BASE_URL=http://YOUR_HOST:4000
+EXPO_PUBLIC_VOICE_GATEWAY_BASE_URL=http://YOUR_HOST:4000
+```
 4. Install dependencies:
 
 ```bash

@@ -9,6 +9,7 @@
     "plugins": [
       "expo-apple-authentication",
       "@react-native-google-signin/google-signin",
+      "@config-plugins/react-native-webrtc",
       [
         "expo-audio",
         {
@@ -22,6 +23,10 @@
     },
     "android": {
       "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ],
       "package": "com.daber.app"
     },
     "web": {

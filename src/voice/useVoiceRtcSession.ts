@@ -14,7 +14,7 @@ type UseVoiceRtcSessionResult = {
   session: VoiceRtcSessionResponse | null;
   lastEvent: VoiceRealtimeEvent | null;
   error: string | null;
-  connect: (input: { offerSdp: string; referenceText?: string }) => Promise<VoiceRtcSessionResponse>;
+  connect: (input: { referenceText?: string }) => Promise<VoiceRtcSessionResponse>;
   reconnect: (offerSdp: string) => Promise<VoiceRtcSessionResponse>;
   disconnect: () => Promise<void>;
   client: VoiceRtcClient;
@@ -38,16 +38,18 @@ export function useVoiceRtcSession(args: UseVoiceRtcSessionArgs): UseVoiceRtcSes
   }, []);
 
   const connect = React.useCallback(
-    async (input: { offerSdp: string; referenceText?: string }) => {
+    async (input: { referenceText?: string }) => {
       setState("connecting");
       setError(null);
 
       try {
+        const offerSdp = await clientRef.current!.createOffer();
         const nextSession = await createRtcVoiceSession(args.user, {
           scenarioSessionId: args.scenarioSessionId,
-          offerSdp: input.offerSdp,
+          offerSdp,
           referenceText: input.referenceText
         });
+        await clientRef.current?.applyAnswer(nextSession.answerSdp);
         clientRef.current?.setSession(nextSession);
         setSession(nextSession);
         setState("connected");
@@ -73,10 +75,12 @@ export function useVoiceRtcSession(args: UseVoiceRtcSessionArgs): UseVoiceRtcSes
       setError(null);
 
       try {
+        const nextOfferSdp = offerSdp || (await clientRef.current!.createOffer(currentSession.iceServers ? { iceServers: currentSession.iceServers } : undefined));
         const nextSession = await reconnectRtcVoiceSession(args.user, {
           voiceSessionId: currentSession.voiceSessionId,
-          offerSdp
+          offerSdp: nextOfferSdp
         });
+        await clientRef.current?.applyAnswer(nextSession.answerSdp);
         clientRef.current?.setSession(nextSession);
         setSession(nextSession);
         setState("connected");
