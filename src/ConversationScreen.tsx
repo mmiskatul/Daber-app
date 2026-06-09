@@ -30,6 +30,7 @@ import {
   ScenarioSessionResponse,
   ScenarioSpeechResponse,
   ScenarioTurn,
+  VoiceRtcState,
   sendScenarioMessage,
   sendScenarioVoice,
   synthesizeScenarioTutorSpeech,
@@ -38,7 +39,9 @@ import {
 } from "./api";
 import { firestore } from "./firebase";
 import { colors, radii } from "./theme";
+import { AudioLevelSnapshot, createAvatarAudioLevelSnapshot, createSilentAudioLevelSnapshot } from "./voice/audioLevelTracker";
 import { isVoiceRtcEnabled } from "./voice/voiceFeatureFlags";
+import { IllustratedAvatarCard, IllustratedAvatarStudio } from "./voice/IllustratedAvatar";
 import { useVoiceRtcSession } from "./voice/useVoiceRtcSession";
 
 type Props = {
@@ -217,6 +220,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const [selectedCorrectionTurn, setSelectedCorrectionTurn] = React.useState<LocalScenarioTurn | null>(null);
   const [showSceneMenu, setShowSceneMenu] = React.useState(false);
   const [showSessionReview, setShowSessionReview] = React.useState(false);
+  const [showAvatarStudio, setShowAvatarStudio] = React.useState(false);
   const [showTranslations, setShowTranslations] = React.useState<Record<number, boolean>>({});
   const [autoSpeakEnabled, setAutoSpeakEnabled] = React.useState(true);
   const [error, setError] = React.useState("");
@@ -232,6 +236,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
     lastResponseMs: null,
     lastInputMode: null
   });
+  const [avatarLevels, setAvatarLevels] = React.useState<AudioLevelSnapshot>(createSilentAudioLevelSnapshot());
   const lastSpokenTutorTurnRef = React.useRef("");
   const initialSnapshotSeenRef = React.useRef(false);
   const translationRequestCacheRef = React.useRef<Record<string, Promise<string>>>({});
@@ -785,6 +790,43 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
   const sceneSummary = session?.variation?.situation || session?.theme?.blurb || "";
   const avatarSpeakingActive = tutorPlayerStatus.playing || isFallbackTutorSpeaking;
   const avatarListeningActive = recorderState.isRecording;
+  const avatarRemoteSpeakingActive = voiceRtcState === "assistantSpeaking" || avatarSpeakingActive;
+  const avatarRtcConnected = voiceRtcState === "connected" || voiceRtcState === "listening" || voiceRtcState === "processing" || voiceRtcState === "assistantSpeaking";
+
+  React.useEffect(() => {
+    const buildSnapshot = () => {
+      if (avatarRemoteSpeakingActive) {
+        const outputLevel = 0.54 + Math.random() * 0.34;
+        const inputLevel = voiceRtcState === "assistantSpeaking" ? 0.12 + Math.random() * 0.08 : 0.04;
+        return createAvatarAudioLevelSnapshot(inputLevel, outputLevel);
+      }
+
+      if (avatarListeningActive) {
+        const inputLevel = 0.42 + Math.random() * 0.4;
+        return createAvatarAudioLevelSnapshot(inputLevel, 0.08);
+      }
+
+      if (avatarRtcConnected) {
+        return createAvatarAudioLevelSnapshot(0.06, 0.1);
+      }
+
+      return createSilentAudioLevelSnapshot();
+    };
+
+    setAvatarLevels(buildSnapshot());
+
+    if (!avatarRemoteSpeakingActive && !avatarListeningActive && !avatarRtcConnected) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setAvatarLevels(buildSnapshot());
+    }, 160);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [avatarListeningActive, avatarRemoteSpeakingActive, avatarRtcConnected, voiceRtcState]);
 
   React.useEffect(() => {
     return () => {
@@ -1137,11 +1179,14 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
       {/* Expanded Avatar */}
       {!minimized ? (
         <View style={styles.avatarWrap}>
-          <AvatarWindow
+          <IllustratedAvatarCard
             voiceName={session?.tutorVoice?.name || "Dana"}
-            speakingActive={avatarSpeakingActive}
+            speakingActive={avatarRemoteSpeakingActive}
             listeningActive={avatarListeningActive}
+            rtcState={voiceRtcState}
+            audioLevels={avatarLevels}
             onMinimize={() => setMinimized(true)}
+            onOpenStudio={() => setShowAvatarStudio(true)}
           />
         </View>
       ) : null}
@@ -1153,7 +1198,7 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         </View>
       ) : (
             <ScrollView contentContainerStyle={styles.transcriptWrap} showsVerticalScrollIndicator={false}>
-          {minimized ? <MinimizedAvatar mode={mode} onExpand={() => setMinimized(false)} /> : null}
+          {minimized ? <MinimizedAvatar mode={mode} rtcState={voiceRtcState} audioLevels={avatarLevels} onExpand={() => setMinimized(false)} /> : null}
           {turns.map((turn, index) => (
             <MessageBubble
               key={`${turn.role}-${turn.createdAt}-${index}`}
@@ -1186,6 +1231,45 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
         </ScrollView>
       )}
 
+      <Modal
+        visible={showAvatarStudio}
+        transparent={false}
+        animationType="fade"
+        onRequestClose={() => setShowAvatarStudio(false)}
+      >
+        <View style={styles.avatarStudioScreen}>
+          <View style={styles.avatarStudioTopBar}>
+            <Pressable onPress={() => setShowAvatarStudio(false)} style={styles.topPillGhost}>
+              <View style={styles.closeVector}>
+                <View style={[styles.closeLine, { transform: [{ rotate: "45deg" }] }]} />
+                <View style={[styles.closeLine, { transform: [{ rotate: "-45deg" }] }]} />
+              </View>
+            </Pressable>
+            <Text style={styles.avatarStudioTitle}>{session?.tutorVoice?.name || "Dana"}</Text>
+            <Pressable onPress={() => setShowSceneMenu(true)} style={styles.topPillGhost}>
+              <SettingsGlyph />
+            </Pressable>
+          </View>
+
+          <View style={styles.avatarStudioStage}>
+            <IllustratedAvatarStudio
+              voiceName={session?.tutorVoice?.name || "Dana"}
+              speakingActive={avatarRemoteSpeakingActive}
+              listeningActive={avatarListeningActive}
+              rtcState={voiceRtcState}
+              audioLevels={avatarLevels}
+              caption={
+                avatarRemoteSpeakingActive
+                  ? `${session?.tutorVoice?.name || "Dana"} is speaking naturally. Watch the face and follow the rhythm.`
+                  : avatarListeningActive
+                    ? "You can speak whenever the microphone is active."
+                    : "Stay ready. When the mic opens, start speaking naturally."
+              }
+            />
+          </View>
+        </View>
+      </Modal>
+
       {/* Hints Sheet Modal */}
       <Modal
         visible={showHints}
@@ -1200,7 +1284,11 @@ export function ConversationScreen({ user, sessionId, onReplaceSession, onExit }
             <Text style={styles.sheetEyebrow}>NEED A HINT?</Text>
             <Text style={styles.sheetTitle}>You can say…</Text>
             <View style={styles.sheetList}>
-              {hintItems.map((item) => (
+              {[
+                { he: "שלום, אפשר לדבר לאט יותר?", en: "Hello, can you speak a little more slowly?" },
+                { he: "אני רוצה לתרגל שיחה יומיומית בעברית.", en: "I want to practice an everyday conversation in Hebrew." },
+                { he: "אפשר לתת לי דוגמה טבעית לתשובה?", en: "Can you give me a natural example answer?" }
+              ].map((item) => (
                 <Pressable
                   key={item.he}
                   style={styles.sheetItem}
@@ -1488,12 +1576,20 @@ function AvatarWindow({
   voiceName,
   speakingActive,
   listeningActive,
-  onMinimize
+  rtcState,
+  audioLevels,
+  onMinimize,
+  onOpenStudio,
+  fullscreen = false
 }: {
   voiceName: string;
   speakingActive: boolean;
   listeningActive: boolean;
+  rtcState: VoiceRtcState;
+  audioLevels: AudioLevelSnapshot;
   onMinimize: () => void;
+  onOpenStudio?: () => void;
+  fullscreen?: boolean;
 }) {
   const breathingAnim = React.useRef(new Animated.Value(0)).current;
   const mouthAnim = React.useRef(new Animated.Value(0.12)).current;
@@ -1501,6 +1597,31 @@ function AvatarWindow({
   const eyeOpenAnim = React.useRef(new Animated.Value(1)).current;
   const browAnim = React.useRef(new Animated.Value(0)).current;
   const leanAnim = React.useRef(new Animated.Value(0)).current;
+  const gazeAnim = React.useRef(new Animated.Value(0)).current;
+  const signalBars = React.useMemo(
+    () => [
+      Math.max(0.18, audioLevels.inputLevel * 0.9),
+      Math.max(0.12, Math.max(audioLevels.inputLevel, audioLevels.outputLevel) * 0.95),
+      Math.max(0.16, audioLevels.outputLevel),
+      Math.max(0.12, audioLevels.outputLevel * 0.72)
+    ],
+    [audioLevels.inputLevel, audioLevels.outputLevel]
+  );
+  const statusLabel =
+    rtcState === "assistantSpeaking"
+      ? "VOICE LIVE"
+      : speakingActive
+        ? "SPEAKING"
+        : listeningActive
+          ? "LISTENING"
+          : rtcState === "processing"
+            ? "THINKING"
+            : rtcState === "connected" || rtcState === "listening"
+              ? "RTC READY"
+              : rtcState === "connecting" || rtcState === "reconnecting"
+                ? "CONNECTING"
+                : "IDLE";
+  const visualPower = Math.max(audioLevels.inputLevel, audioLevels.outputLevel);
 
   React.useEffect(() => {
     const blinkLoop = Animated.loop(
@@ -1527,6 +1648,37 @@ function AvatarWindow({
   }, [eyeOpenAnim]);
 
   React.useEffect(() => {
+    const glanceLoop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(1700),
+        Animated.timing(gazeAnim, {
+          toValue: 0.85,
+          duration: 520,
+          useNativeDriver: false
+        }),
+        Animated.delay(640),
+        Animated.timing(gazeAnim, {
+          toValue: -0.55,
+          duration: 620,
+          useNativeDriver: false
+        }),
+        Animated.delay(760),
+        Animated.timing(gazeAnim, {
+          toValue: 0,
+          duration: 560,
+          useNativeDriver: false
+        })
+      ])
+    );
+
+    glanceLoop.start();
+
+    return () => {
+      glanceLoop.stop();
+    };
+  }, [gazeAnim]);
+
+  React.useEffect(() => {
     let loop: Animated.CompositeAnimation;
 
     if (speakingActive) {
@@ -1546,35 +1698,35 @@ function AvatarWindow({
           ]),
           Animated.sequence([
             Animated.timing(mouthAnim, {
-              toValue: 1,
-              duration: 130,
-              useNativeDriver: false
-            }),
-            Animated.timing(mouthAnim, {
-              toValue: 0.22,
+              toValue: 0.72 + visualPower * 0.42,
               duration: 110,
               useNativeDriver: false
             }),
             Animated.timing(mouthAnim, {
-              toValue: 0.82,
-              duration: 140,
+              toValue: 0.18 + visualPower * 0.2,
+              duration: 90,
+              useNativeDriver: false
+            }),
+            Animated.timing(mouthAnim, {
+              toValue: 0.58 + visualPower * 0.36,
+              duration: 120,
               useNativeDriver: false
             }),
             Animated.timing(mouthAnim, {
               toValue: 0.12,
-              duration: 120,
+              duration: 100,
               useNativeDriver: false
             })
           ]),
           Animated.sequence([
             Animated.timing(auraAnim, {
-              toValue: 0.42,
-              duration: 300,
+              toValue: 0.34 + visualPower * 0.34,
+              duration: 240,
               useNativeDriver: false
             }),
             Animated.timing(auraAnim, {
-              toValue: 0.18,
-              duration: 300,
+              toValue: 0.14 + visualPower * 0.14,
+              duration: 220,
               useNativeDriver: false
             })
           ])
@@ -1607,13 +1759,13 @@ function AvatarWindow({
           ]),
           Animated.sequence([
             Animated.timing(auraAnim, {
-              toValue: 0.28,
-              duration: 650,
+              toValue: 0.2 + audioLevels.inputLevel * 0.28,
+              duration: 500,
               useNativeDriver: false
             }),
             Animated.timing(auraAnim, {
-              toValue: 0.14,
-              duration: 650,
+              toValue: 0.12 + audioLevels.inputLevel * 0.1,
+              duration: 500,
               useNativeDriver: false
             })
           ])
@@ -1683,7 +1835,7 @@ function AvatarWindow({
     return () => {
       loop.stop();
     };
-  }, [auraAnim, breathingAnim, browAnim, leanAnim, listeningActive, mouthAnim, speakingActive]);
+  }, [auraAnim, audioLevels.inputLevel, breathingAnim, browAnim, leanAnim, listeningActive, mouthAnim, speakingActive, visualPower]);
 
   const mouthHeight = mouthAnim.interpolate({
     inputRange: [0, 1],
@@ -1713,11 +1865,27 @@ function AvatarWindow({
     inputRange: [0, 1],
     outputRange: [1, 1.05]
   });
+  const gazeShift = gazeAnim.interpolate({
+    inputRange: [-1, 1],
+    outputRange: [-8, 8]
+  });
+  const pupilShift = gazeAnim.interpolate({
+    inputRange: [-1, 1],
+    outputRange: [-2.2, 2.2]
+  });
+
+  const hintItems = [
+    { he: "שלום, אפשר לדבר לאט יותר?", en: "Hello, can you speak a little more slowly?" },
+    { he: "אני רוצה לתרגל שיחה יומיומית בעברית.", en: "I want to practice an everyday conversation in Hebrew." },
+    { he: "אפשר לתת לי דוגמה טבעית לתשובה?", en: "Can you give me a natural example answer?" }
+  ];
 
   return (
     <View style={styles.avatarCard}>
       <View style={styles.avatarBackdrop} />
+      <View style={styles.avatarGloss} />
       <Animated.View style={[styles.avatarAura, { opacity: auraAnim }]} />
+      <View style={styles.avatarStageShadow} />
 
       <View style={styles.windowGridLeft}>
         <View style={styles.gridLineHorizontal} />
@@ -1734,12 +1902,12 @@ function AvatarWindow({
 
       <View style={styles.silhouetteContainer}>
         <Animated.View style={[styles.shoulders, { transform: [{ scale: shoulderScale }, { translateY: headForwardY }] }]} />
-        <View style={styles.neck} />
+        <Animated.View style={[styles.neck, { transform: [{ translateX: gazeShift }] }]} />
         <Animated.View
           style={[
             styles.head,
             {
-              transform: [{ translateY: Animated.add(breathingAnim, headForwardY) }, { scale: headScale }]
+              transform: [{ translateX: gazeShift }, { translateY: Animated.add(breathingAnim, headForwardY) }, { scale: headScale }]
             }
           ]}
         >
@@ -1751,10 +1919,10 @@ function AvatarWindow({
             </View>
             <View style={styles.eyeRow}>
               <Animated.View style={[styles.eye, { height: eyeHeight }]}>
-                <View style={styles.pupil} />
+                <Animated.View style={[styles.pupil, { transform: [{ translateX: pupilShift }] }]} />
               </Animated.View>
               <Animated.View style={[styles.eye, { height: eyeHeight }]}>
-                <View style={styles.pupil} />
+                <Animated.View style={[styles.pupil, { transform: [{ translateX: pupilShift }] }]} />
               </Animated.View>
             </View>
             <View style={styles.nose} />
@@ -1788,6 +1956,24 @@ function AvatarWindow({
           ]}
         />
         <Text style={styles.avatarStatusText}>{voiceName.toUpperCase()}</Text>
+        <View style={styles.avatarDivider} />
+        <Text style={styles.avatarStatusMode}>{statusLabel}</Text>
+      </View>
+
+      <View style={styles.avatarSignalRack}>
+        {signalBars.map((level, index) => (
+          <View key={`signal-${index}`} style={styles.avatarSignalBarTrack}>
+            <View
+              style={[
+                styles.avatarSignalBarFill,
+                {
+                  height: `${Math.round(level * 100)}%`,
+                  opacity: 0.38 + level * 0.62
+                }
+              ]}
+            />
+          </View>
+        ))}
       </View>
 
       <View style={styles.avatarBottomRight}>
@@ -1799,7 +1985,7 @@ function AvatarWindow({
             <View style={styles.speakerWave2} />
           </View>
         </Pressable>
-        <Pressable style={styles.avatarSmallControl}>
+        <Pressable style={styles.avatarSmallControl} onPress={onOpenStudio}>
           <View style={styles.cameraVector}>
             <View style={styles.cameraBox} />
             <View style={styles.cameraCone} />
@@ -1810,12 +1996,33 @@ function AvatarWindow({
   );
 }
 
-function MinimizedAvatar({ mode, onExpand }: { mode: Mode; onExpand: () => void }) {
+function MinimizedAvatar({
+  mode,
+  rtcState,
+  audioLevels,
+  onExpand
+}: {
+  mode: Mode;
+  rtcState: VoiceRtcState;
+  audioLevels: AudioLevelSnapshot;
+  onExpand: () => void;
+}) {
+  const minimizedBarHeights = [
+    Math.max(0.18, audioLevels.inputLevel * 0.9),
+    Math.max(0.22, Math.max(audioLevels.inputLevel, audioLevels.outputLevel)),
+    Math.max(0.18, audioLevels.outputLevel * 0.86)
+  ];
   return (
     <Pressable style={styles.minimizedAvatar} onPress={onExpand}>
       <View style={styles.minimizedBackdrop} />
+      <View style={styles.minimizedGloss} />
       <View style={styles.minimizedShoulders} />
       <View style={styles.minimizedHead} />
+      <View style={styles.minimizedSignalStack}>
+        {minimizedBarHeights.map((level, index) => (
+          <View key={`mini-signal-${index}`} style={[styles.minimizedSignalBar, { height: 10 + level * 18 }]} />
+        ))}
+      </View>
       <View
         style={[
           styles.minimizedDot,
@@ -1826,6 +2033,9 @@ function MinimizedAvatar({ mode, onExpand }: { mode: Mode; onExpand: () => void 
             : null
         ]}
       />
+      <Text style={styles.minimizedRtcText}>
+        {rtcState === "connected" || rtcState === "listening" || rtcState === "assistantSpeaking" ? "LIVE" : "DANA"}
+      </Text>
     </Pressable>
   );
 }
@@ -2095,6 +2305,14 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center"
   },
+  topPillGhost: {
+    width: 44,
+    height: 44,
+    borderRadius: radii.pill,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    alignItems: "center",
+    justifyContent: "center"
+  },
   settingsPillText: {
     color: colors.ink,
     fontSize: 18,
@@ -2211,17 +2429,64 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 14
   },
+  avatarStudioScreen: {
+    flex: 1,
+    backgroundColor: "#050505"
+  },
+  avatarStudioTopBar: {
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between"
+  },
+  avatarStudioTitle: {
+    color: colors.bone,
+    fontSize: 28,
+    fontWeight: "700"
+  },
+  avatarStudioStage: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 16
+  },
+  avatarStudioCaptionWrap: {
+    paddingHorizontal: 22,
+    paddingBottom: 28
+  },
+  avatarStudioCaption: {
+    color: colors.bone,
+    fontSize: 16,
+    lineHeight: 24,
+    textAlign: "center",
+    backgroundColor: "rgba(26,20,16,0.72)",
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 24
+  },
   avatarCard: {
     aspectRatio: 4.0 / 3.0,
     width: "100%",
     borderRadius: 24,
     overflow: "hidden",
-    backgroundColor: "#D9A35E",
+    backgroundColor: "#D39B57",
+    borderWidth: 1,
+    borderColor: "rgba(255,244,228,0.22)",
     position: "relative"
   },
   avatarBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#D9A35E"
+    backgroundColor: "#D39B57"
+  },
+  avatarGloss: {
+    position: "absolute",
+    top: -14,
+    left: "12%",
+    width: "76%",
+    height: "38%",
+    borderRadius: 999,
+    backgroundColor: "rgba(255,247,237,0.2)"
   },
   avatarAura: {
     position: "absolute",
@@ -2232,6 +2497,15 @@ const styles = StyleSheet.create({
     height: 192,
     borderRadius: 999,
     backgroundColor: "rgba(244,236,222,0.55)"
+  },
+  avatarStageShadow: {
+    position: "absolute",
+    left: "16%",
+    right: "16%",
+    bottom: 20,
+    height: 26,
+    borderRadius: 999,
+    backgroundColor: "rgba(58,24,16,0.16)"
   },
   windowGridLeft: {
     position: "absolute",
@@ -2414,10 +2688,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 12,
     right: 12,
-    height: 28,
-    paddingHorizontal: 10,
+    minHeight: 30,
+    paddingHorizontal: 11,
     borderRadius: radii.pill,
-    backgroundColor: "rgba(26,20,16,0.4)",
+    backgroundColor: "rgba(26,20,16,0.48)",
     flexDirection: "row",
     alignItems: "center",
     gap: 6
@@ -2438,6 +2712,43 @@ const styles = StyleSheet.create({
     color: colors.bone,
     fontSize: 9,
     letterSpacing: 1
+  },
+  avatarDivider: {
+    width: 1,
+    height: 10,
+    backgroundColor: "rgba(244,236,222,0.24)"
+  },
+  avatarStatusMode: {
+    color: "rgba(244,236,222,0.86)",
+    fontSize: 8,
+    letterSpacing: 0.9
+  },
+  avatarSignalRack: {
+    position: "absolute",
+    left: 12,
+    bottom: 72,
+    width: 30,
+    height: 54,
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: "rgba(26,20,16,0.32)",
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between"
+  },
+  avatarSignalBarTrack: {
+    width: 3.5,
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: "rgba(244,236,222,0.1)",
+    justifyContent: "flex-end",
+    overflow: "hidden"
+  },
+  avatarSignalBarFill: {
+    width: "100%",
+    borderRadius: 999,
+    backgroundColor: colors.gold
   },
   avatarBottomRight: {
     position: "absolute",
@@ -2719,6 +3030,15 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: "#D9A35E"
   },
+  minimizedGloss: {
+    position: "absolute",
+    top: -10,
+    left: 8,
+    right: 8,
+    height: 26,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,247,237,0.18)"
+  },
   minimizedShoulders: {
     position: "absolute",
     bottom: 0,
@@ -2750,6 +3070,27 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.7)",
     borderWidth: 2,
     borderColor: colors.bone
+  },
+  minimizedSignalStack: {
+    position: "absolute",
+    right: 8,
+    bottom: 8,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 3
+  },
+  minimizedSignalBar: {
+    width: 4,
+    borderRadius: 999,
+    backgroundColor: colors.gold
+  },
+  minimizedRtcText: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    color: colors.bone,
+    fontSize: 8,
+    letterSpacing: 0.8
   },
   messageRow: {
     flexDirection: "row",
